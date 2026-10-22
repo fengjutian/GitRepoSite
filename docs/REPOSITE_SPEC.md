@@ -111,7 +111,7 @@ RepoSite 允许用户输入公开 GitHub 仓库地址，读取仓库中的 READM
 | UI 样式 | Tailwind CSS |
 | 组件库 | shadcn/ui |
 | 图标库 | lucide-react |
-| GitHub 数据 | GitHub REST API |
+| GitHub 数据 | GitHub REST API（结构）+ 固定 commit 内容通道（文件） |
 | Markdown | unified、remark、rehype |
 | HTML 安全处理 | rehype-sanitize |
 | 代码高亮 | Shiki |
@@ -252,7 +252,21 @@ V1 支持：
 https://github.com/owner/repository
 ```
 
-禁止将输入直接用于任意 HTTP 请求。先解析并校验 GitHub URL，再通过固定 GitHub API 主机读取数据。
+禁止将输入直接用于任意 HTTP 请求。先解析并校验 GitHub URL，再通过固定 GitHub 主机读取数据：
+
+| 主机 | 用途 | 是否消耗 API 配额 |
+| --- | --- | --- |
+| `api.github.com` | 仓库元数据、commit SHA、递归文件树 | 是，每次任务固定 3 次 |
+| `raw.githubusercontent.com` | 固定 commit SHA 的文件内容 | 否 |
+
+两个主机都是固定白名单，不接受用户输入拼接任意地址。文件内容走内容通道，是为了避免「每读一个文件消耗一次 API 配额」——未认证请求每个 IP 每小时只有 60 次，共享出口 IP 下几乎无法读完一个仓库。
+
+用户可在页面上填写可选的 GitHub Token（无需任何仓库权限）：
+
+- Token 只保存在当前页面内存中，刷新即失效。
+- Token 由浏览器直连 `api.github.com`，不进入服务端代理、日志、LocalStorage 或导出包。
+- Token 不发往内容通道：`raw.githubusercontent.com` 对带 `Authorization` 的跨域预检返回 403。
+- 触发限流时，错误信息必须说明配额恢复时间，并提示可以通过 Token 提升配额。
 
 ### 7.2 读取内容
 
@@ -272,6 +286,8 @@ https://github.com/owner/repository
 - 排除 `.git`、`node_modules`、`dist`、`build` 等非必要目录。
 - 不执行仓库中的 `package.json` 脚本、构建脚本或其他任意代码。
 - 递归文件树遇到 GitHub API 截断时，应进行补充读取或明确提示内容不完整，不能默默认为读取完整。
+- 文件读取必须并发受限（默认 6 路），既缩短等待时间，也避免对 GitHub 造成突发压力。
+- 触发 GitHub 限流时不得静默失败，必须明确告知配额恢复时间。
 
 图片数量上限是数量约束，不代表可以不受限制地读取超大图片；图片大小仍需单独校验。
 

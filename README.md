@@ -46,6 +46,26 @@ npm run dev        # http://localhost:4321
 - **BYOK 模式**：用户 Key 只保存在当前页面的内存中，刷新即丢失；不写入 LocalStorage、URL、日志或导出的 ZIP。
 - 导出前会对生成的每个文件做密钥特征扫描，命中即拒绝打包。
 
+### GitHub 配额与 Token
+
+GitHub 对**未认证**请求按 IP 限制 60 次/小时。RepoSite 把读取拆成两类：
+
+| 请求 | 走哪条通道 | 是否消耗 API 配额 |
+| --- | --- | --- |
+| 仓库元数据、commit SHA、文件树 | `api.github.com` | 是，每次任务固定 3 次 |
+| 文档、图片等文件内容 | `raw.githubusercontent.com`（固定 commit SHA） | 否 |
+
+也就是说，一次任务稳定消耗 3 次配额，而不是「3 次 + 每个文件 1 次」。即便如此，共享出口 IP（公司网络、容器、代理）很容易把这 60 次用光。
+
+这 3 次调用（元数据、commit SHA、文件树）还会在内存中缓存：重复读取同一个仓库不再消耗任何配额，文件树按 commit SHA 缓存因而永远有效，元数据 5 分钟过期、分支指针 60 秒过期。
+
+页面上的 **GitHub Token（可选）** 用于解决这个问题：
+
+- 只需要一个没有仓库权限的 fine-grained PAT（`public_repo` 都不需要）。
+- 填写后配额从 60 次/小时提升到 5000 次/小时。
+- Token 只保存在当前页面内存中，刷新即失效；由浏览器直接发往 `api.github.com`，不经过 RepoSite 服务端，不写入 LocalStorage、URL、日志或导出的 ZIP。
+- Token **不会**被发往内容通道（`raw.githubusercontent.com` 对带 `Authorization` 的跨域预检直接返回 403）。
+
 ## 目录结构
 
 ```text
@@ -91,6 +111,7 @@ Netlify 已在 `netlify.toml` 中配置好：构建命令 `npm run build`，发�
 ## 已知边界
 
 - 只支持 `github.com` 上的公开仓库；私有仓库需要自建令牌，不在 V1 范围。
+- GitHub 的匿名配额按 IP 计算，共享出口 IP 下 60 次/小时很容易用尽；此时页面会提示配额恢复时间，建议填写 GitHub Token（见上）。
 - 单次任务最多复制 50 张本地图片；外部图片默认保留外链，可选通过服务端代理下载（带 SSRF 防护）。
 - 未发现 LICENSE 时必须由用户明确确认后才能继续；RepoSite 不授予任何授权。
 - RepoSite 能改善内容的可发现性，但不能保证第三方 AI 系统一定抓取、索引或用于训练。

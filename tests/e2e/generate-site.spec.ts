@@ -14,6 +14,30 @@ const BLOB_SHA: Record<string, string> = {
 };
 
 async function mockGitHub(page: import('@playwright/test').Page) {
+  const stats = { contentReads: 0, blobReads: 0 };
+
+  // File content is read from the content host, which is not metered against
+  // the REST API quota. The blob endpoint stays mocked as the fallback path.
+  await page.route('https://raw.githubusercontent.com/**', async (route) => {
+    const url = new URL(route.request().url());
+    const marker = `/${SHA}/`;
+    const index = url.pathname.indexOf(marker);
+    if (index === -1) return route.fulfill({ status: 404, body: 'Not Found' });
+    const filePath = decodeURIComponent(url.pathname.slice(index + marker.length));
+    stats.contentReads += 1;
+    if (filePath === 'assets/logo.png') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'image/png',
+        body: Buffer.from(PNG_BASE64, 'base64'),
+      });
+    }
+    const text =
+      filePath === 'README.md' ? README : filePath === 'docs/guide.md' ? GUIDE : undefined;
+    if (text === undefined) return route.fulfill({ status: 404, body: 'Not Found' });
+    return route.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: text });
+  });
+
   await page.route('https://api.github.com/**', async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -53,16 +77,19 @@ async function mockGitHub(page: import('@playwright/test').Page) {
     }
     const blob = path.match(/\/git\/blobs\/([0-9a-f]{40})$/);
     if (blob) {
+      stats.blobReads += 1;
       const content = BLOB_SHA[blob[1]!];
       if (!content) return route.fulfill({ status: 404, json: { message: 'Not Found' } });
       return route.fulfill({ json: { content, encoding: 'base64' } });
     }
     return route.fulfill({ status: 404, json: { message: 'Not Found' } });
   });
+
+  return stats;
 }
 
 test('loads a repository, requires a license confirmation and exports a ZIP', async ({ page }) => {
-  await mockGitHub(page);
+  const stats = await mockGitHub(page);
   await page.goto('/');
   await page.waitForSelector('astro-island:not([ssr])');
 
@@ -70,6 +97,10 @@ test('loads a repository, requires a license confirmation and exports a ZIP', as
   const loadButton = page.getByRole('button', { name: /读取仓库/ }).first();
   await expect(loadButton).toBeEnabled();
   await loadButton.click();
+
+  // The repository content comes from the content host, not from the REST API.
+  await expect.poll(() => stats.contentReads).toBeGreaterThanOrEqual(3);
+  expect(stats.blobReads).toBe(0);
 
   // The README becomes the first document of the generated site.
   await expect(page.getByRole('button', { name: /Demo Project/ })).toBeVisible();

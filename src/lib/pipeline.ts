@@ -62,6 +62,9 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   '.ico': 'image/x-icon',
 };
 
+/** How many file reads run at the same time. The content host tolerates this easily. */
+const READ_CONCURRENCY = 6;
+
 /** Loads a public repository and turns it into the structured content model. */
 export async function loadRepository(
   repositoryUrl: string,
@@ -86,10 +89,10 @@ export async function loadRepository(
       (entry) => /(^|\/)readme\.md$/i.test(entry.path) && !entry.path.includes('/'),
     ) ?? entries.find((entry) => /(^|\/)readme\.md$/i.test(entry.path));
   const readmeMarkdown = readmeEntry
-    ? await readText(client, reference, readmeEntry)
+    ? await readText(client, reference, commitSha, readmeEntry)
     : '';
 
-  const license = await resolveLicense(entries, entryByPath, client, reference, repository);
+  const license = await resolveLicense(entries, entryByPath, client, reference, repository, commitSha);
 
   const documentPaths = pickDocumentPaths(
     entries.map((entry) => entry.path),
@@ -98,11 +101,24 @@ export async function loadRepository(
   const documents: DocumentPage[] = [];
   const imageReferences = new Map<string, string[]>();
 
-  for (const path of documentPaths.slice(0, maxDocuments)) {
+  // Every file is read from the pinned commit, and the reads run in parallel:
+  // they hit the content host, which is not metered against the API quota.
+  const selectedPaths = documentPaths.slice(0, maxDocuments);
+  const markdownByPath = new Map<string, string>();
+  if (readmeEntry && readmeMarkdown) markdownByPath.set(readmeEntry.path, readmeMarkdown);
+  const pendingPaths = selectedPaths.filter((path) => !markdownByPath.has(path));
+  const readDocuments = await mapWithConcurrency(pendingPaths, READ_CONCURRENCY, async (path) => {
     const entry = entryByPath.get(path);
-    if (!entry) continue;
-    const markdown =
-      readmeEntry && path === readmeEntry.path ? readmeMarkdown : await readText(client, reference, entry);
+    if (!entry) return null;
+    const markdown = await readText(client, reference, commitSha, entry);
+    return markdown ? { path, markdown } : null;
+  });
+  for (const read of readDocuments) {
+    if (read) markdownByPath.set(read.path, read.markdown);
+  }
+
+  for (const path of selectedPaths) {
+    const markdown = markdownByPath.get(path);
     if (!markdown) continue;
 
     const slug = documentSlug(path, readmeEntry?.path);
@@ -128,9 +144,19 @@ export async function loadRepository(
   const plan = planLocalImages(candidates, maxImages);
 
   const usedHashes = new Set<string>();
-  for (const candidate of plan.selected) {
+  // The bytes are fetched in parallel, but the records are built in a stable
+  // order so that duplicate detection and file names never depend on timing.
+  const fetchedImages = await mapWithConcurrency(plan.selected, READ_CONCURRENCY, async (candidate) => {
     const entry = entryByPath.get(candidate.sourcePath);
-    if (!entry) {
+    if (!entry) return { candidate, outcome: 'missing' as const };
+    if (entry.size && entry.size > maxImageBytes) return { candidate, outcome: 'too-large' as const };
+    const bytes = await client.getFileBytes(reference, commitSha, candidate.sourcePath, entry.sha);
+    return { candidate, outcome: 'ok' as const, bytes };
+  });
+
+  for (const item of fetchedImages) {
+    const candidate = item.candidate;
+    if (item.outcome === 'missing') {
       assets.push({
         sourcePath: candidate.sourcePath,
         type: 'image',
@@ -140,7 +166,7 @@ export async function loadRepository(
       });
       continue;
     }
-    if (entry.size && entry.size > maxImageBytes) {
+    if (item.outcome === 'too-large') {
       assets.push({
         sourcePath: candidate.sourcePath,
         type: 'image',
@@ -151,7 +177,7 @@ export async function loadRepository(
       continue;
     }
 
-    let bytes = await client.getBlobBytes(reference, entry.sha);
+    let bytes = item.bytes;
     const extension = extensionOf(candidate.sourcePath);
     let svgNote: string | undefined;
     if (extension === '.svg') {
@@ -300,11 +326,12 @@ async function resolveLicense(
   client: GitHubClient,
   reference: { owner: string; repo: string },
   repository: { license?: { spdxId: string | null; name: string | null } | null },
+  commitSha: string,
 ): Promise<LicenseInfo> {
   const detected = detectLicense(entries.map((entry) => entry.path));
   if (detected.sourcePath) {
     const entry = entryByPath.get(detected.sourcePath);
-    const text = entry ? await readText(client, reference, entry) : '';
+    const text = entry ? await readText(client, reference, commitSha, entry) : '';
     const identifier = identifyLicense(text);
     return {
       status: identifier ? 'detected' : 'uncertain',
@@ -323,10 +350,31 @@ async function resolveLicense(
 async function readText(
   client: GitHubClient,
   reference: { owner: string; repo: string },
+  commitSha: string,
   entry: { path: string; sha: string },
 ): Promise<string> {
-  const bytes = await client.getBlobBytes(reference, entry.sha);
+  const bytes = await client.getFileBytes(reference, commitSha, entry.path, entry.sha);
   return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+}
+
+/** Runs `worker` over `items` with a bounded number of parallel requests. */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      results[index] = await worker(items[index]!, index);
+    }
+  });
+  await Promise.all(runners);
+  return results;
 }
 
 function pickDocumentPaths(paths: string[], readmePath?: string): string[] {

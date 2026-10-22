@@ -58,6 +58,7 @@ export default function Studio() {
   const [provider, setProvider] = useState<AIProviderName>('deepseek');
   const [keyMode, setKeyMode] = useState<AIKeyMode>('server');
   const [userApiKey, setUserApiKey] = useState('');
+  const [githubToken, setGitHubToken] = useState('');
   const [downloadExternalImages, setDownloadExternalImages] = useState(false);
 
   const [ai, setAi] = useState<AiState>({ status: 'idle' });
@@ -136,7 +137,11 @@ export default function Studio() {
     setLoadError(null);
     setExportSummary(null);
     try {
-      let loaded = await loadRepository(repositoryUrl, { targetLanguage: language });
+      const token = githubToken.trim();
+      let loaded = await loadRepository(repositoryUrl, {
+        targetLanguage: language,
+        clientOptions: token ? { token } : undefined,
+      });
 
       if (downloadExternalImages) {
         const result = await downloadExternalImagesToSite(
@@ -192,7 +197,7 @@ export default function Studio() {
     } finally {
       setLoading(false);
     }
-  }, [repositoryUrl, language, downloadExternalImages]);
+  }, [repositoryUrl, language, downloadExternalImages, githubToken]);
 
   const handleEdit = useCallback(
     (slug: string, patch: Partial<DocumentPage>) => {
@@ -330,6 +335,22 @@ export default function Studio() {
             </div>
             <p className="text-xs text-muted-foreground">
               仅支持公开仓库；所有内容都从固定 commit SHA 读取，不会执行仓库中的任何脚本。
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="github-token">GitHub Token（可选）</Label>
+            <Input
+              id="github-token"
+              type="password"
+              autoComplete="off"
+              value={githubToken}
+              placeholder="ghp_... / github_pat_..."
+              onChange={(event) => setGitHubToken(event.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              可选。GitHub 对未认证请求按 IP 限制 60 次/小时；填写 Token（不需要任何仓库权限）可提升到 5000
+              次/小时。Token 只保存在当前页面内存中，刷新即失效，由浏览器直连 GitHub，不写入本地存储，也不会进入导出的 ZIP。
             </p>
           </div>
 

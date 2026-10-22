@@ -4,6 +4,16 @@ import type { RepositoryRef } from './url';
 /** The only host the app is ever allowed to talk to for repository data. */
 export const GITHUB_API_ORIGIN = 'https://api.github.com';
 
+/**
+ * Public content host used for pinned file reads.
+ *
+ * `raw.githubusercontent.com` serves the exact bytes of a commit without being
+ * metered against the REST API quota, so reading a whole repository costs 3 API
+ * calls instead of 3 + one call per file. That is the difference between
+ * "one repository per hour" and "one repository per day" without a token.
+ */
+export const GITHUB_RAW_ORIGIN = 'https://raw.githubusercontent.com';
+
 export interface GitHubClientOptions {
   fetchImpl?: typeof fetch;
   /** Optional token, only used server-side to raise the rate limit. Never sent to browsers. */
@@ -49,6 +59,49 @@ export interface ReadmeFile {
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 
+/** How long repository metadata may be reused before it is fetched again. */
+const METADATA_TTL_MS = 5 * 60 * 1000;
+
+/** How long a resolved ref may be reused; a branch tip moves over time. */
+const COMMIT_TTL_MS = 60 * 1000;
+
+/** Upper bound for the in-memory caches. */
+const CACHE_LIMIT = 64;
+
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+
+/**
+ * Cache for the three metered API calls of a read task.
+ *
+ * The cached values are public repository data, so sharing them inside one
+ * runtime is safe. The tree is keyed by the commit SHA and therefore immutable;
+ * metadata and ref resolution expire on their own.
+ */
+const metadataCache = new Map<string, CacheEntry<RepositoryMetadata>>();
+const commitCache = new Map<string, CacheEntry<string>>();
+const treeCache = new Map<string, CacheEntry<TreeResult>>();
+
+function cacheGet<T>(cache: Map<string, CacheEntry<T>>, key: string): T | undefined {
+  const entry = cache.get(key);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(key);
+    return undefined;
+  }
+  return entry.value;
+}
+
+function cacheSet<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T, ttlMs: number): void {
+  if (cache.size >= CACHE_LIMIT) {
+    const oldest = cache.keys().next();
+    if (!oldest.done) cache.delete(oldest.value);
+  }
+  cache.set(key, { value, expiresAt: Date.now() + ttlMs });
+}
+
 export class GitHubClient {
   private readonly fetchImpl: typeof fetch;
   private readonly token?: string;
@@ -65,10 +118,13 @@ export class GitHubClient {
   }
 
   async getRepository(ref: RepositoryRef): Promise<RepositoryMetadata> {
+    const key = `${ref.owner}/${ref.repo}`;
+    const cached = cacheGet(metadataCache, key);
+    if (cached) return cached;
     const data = await this.request<Record<string, unknown>>(
       `/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}`,
     );
-    return {
+    const metadata: RepositoryMetadata = {
       id: Number(data.id ?? 0),
       name: String(data.name ?? ref.repo),
       fullName: String(data.full_name ?? `${ref.owner}/${ref.repo}`),
@@ -93,6 +149,8 @@ export class GitHubClient {
       archived: Boolean(data.archived),
       pushedAt: typeof data.pushed_at === 'string' ? data.pushed_at : null,
     };
+    cacheSet(metadataCache, key, metadata, METADATA_TTL_MS);
+    return metadata;
   }
 
   /** Resolves the immutable commit SHA used to pin every file read of a task. */
@@ -100,6 +158,9 @@ export class GitHubClient {
     if (ref.ref && /^[0-9a-f]{7,40}$/i.test(ref.ref)) {
       return ref.ref.toLowerCase();
     }
+    const key = `${ref.owner}/${ref.repo}@${ref.ref ?? 'HEAD'}`;
+    const cached = cacheGet(commitCache, key);
+    if (cached) return cached;
     const data = await this.request<Record<string, unknown>>(
       `/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/commits/${encodeURIComponent(
         ref.ref ?? 'HEAD',
@@ -109,10 +170,14 @@ export class GitHubClient {
     if (!/^[0-9a-f]{40}$/.test(sha)) {
       throw new RepoSiteError('GITHUB_ERROR', '无法解析提交 SHA。');
     }
+    cacheSet(commitCache, key, sha, COMMIT_TTL_MS);
     return sha;
   }
 
   async getTree(ref: RepositoryRef, commitSha: string): Promise<TreeResult> {
+    const cacheKey = `${ref.owner}/${ref.repo}@${commitSha}`;
+    const cached = cacheGet(treeCache, cacheKey);
+    if (cached) return cached;
     const base = `/repos/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/git/trees/${commitSha}`;
     const data = await this.request<Record<string, unknown>>(`${base}?recursive=1`);
     let entries = toTreeEntries(data.tree);
@@ -134,7 +199,10 @@ export class GitHubClient {
       entries = [...merged.values()];
     }
 
-    return { entries, truncated };
+    const result = { entries, truncated };
+    // A commit tree never changes, so it is safe to keep it for the session.
+    cacheSet(treeCache, cacheKey, result, Number.MAX_SAFE_INTEGER);
+    return result;
   }
 
   async getReadme(ref: RepositoryRef, commitSha: string): Promise<ReadmeFile | null> {
@@ -172,44 +240,97 @@ export class GitHubClient {
     return base64ToBytes(content);
   }
 
+  /**
+   * Reads one file of a pinned commit.
+   *
+   * The content host is tried first because it is not metered against the REST
+   * API quota; the blob endpoint stays available as a fallback for the rare case
+   * where the content host cannot serve a path.
+   */
+  async getFileBytes(
+    ref: RepositoryRef,
+    commitSha: string,
+    path: string,
+    blobSha?: string,
+  ): Promise<Uint8Array> {
+    const url =
+      `${GITHUB_RAW_ORIGIN}/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}` +
+      `/${commitSha}/${encodePathSegments(path)}`;
+    try {
+      const response = await this.send(url, {
+        source: 'content',
+        // No Authorization header here on purpose: the content host answers CORS
+        // preflight requests with 403, so a token would break the request.
+        headers: {},
+        notFoundMessage: `仓库中不存在该文件：${path}`,
+      });
+      return new Uint8Array(await response.arrayBuffer());
+    } catch (error) {
+      if (error instanceof RepoSiteError && error.status === 404 && blobSha) {
+        return this.getBlobBytes(ref, blobSha);
+      }
+      throw error;
+    }
+  }
+
   private async request<T>(path: string): Promise<T> {
-    const url = `${GITHUB_API_ORIGIN}${path}`;
+    const response = await this.send(`${GITHUB_API_ORIGIN}${path}`, {
+      source: 'api',
+      headers: this.apiHeaders(),
+      notFoundMessage: 'GitHub 未找到该资源（仓库可能不存在或不是公开仓库）。',
+    });
+    return (await response.json()) as T;
+  }
+
+  private apiHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': this.userAgent,
+    };
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
+    return headers;
+  }
+
+  private async send(
+    url: string,
+    options: { source: 'api' | 'content'; headers: Record<string, string>; notFoundMessage: string },
+  ): Promise<Response> {
     let lastError: unknown;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
       try {
-        const headers: Record<string, string> = {
-          Accept: 'application/vnd.github+json',
-          'X-GitHub-Api-Version': '2022-11-28',
-          'User-Agent': this.userAgent,
-        };
-        if (this.token) headers.Authorization = `Bearer ${this.token}`;
-
-        const response = await this.fetchImpl(url, { headers, signal: controller.signal });
+        const response = await this.fetchImpl(url, { headers: options.headers, signal: controller.signal });
         const status = response.status;
         if (status === 404) {
-          throw new RepoSiteError('GITHUB_ERROR', 'GitHub 未找到该资源（仓库可能不存在或不是公开仓库）。', {
-            status: 404,
-          });
+          throw new RepoSiteError('GITHUB_ERROR', options.notFoundMessage, { status: 404 });
         }
         if (status === 401 || status === 403 || status === 429) {
           const remaining = response.headers.get('x-ratelimit-remaining');
           if (remaining === '0' || status === 429) {
-            throw new RepoSiteError('GITHUB_RATE_LIMIT', 'GitHub API 调用频率超限，请稍后重试。');
+            throw new RepoSiteError('GITHUB_RATE_LIMIT', this.rateLimitMessage(response, options.source), {
+              status: 429,
+              details: { resetAt: resetAtEpochMs(response) },
+            });
+          }
+          if (options.source === 'content') {
+            throw new RepoSiteError('GITHUB_ERROR', 'GitHub 内容服务拒绝了本次请求，请稍后重试。', {
+              status: 502,
+            });
           }
           throw new RepoSiteError('GITHUB_ERROR', 'GitHub 拒绝了本次请求。', { status: 502 });
         }
-        if (response.status >= 500) {
-          lastError = new RepoSiteError('GITHUB_ERROR', `GitHub 服务异常 (${response.status})。`);
+        if (status >= 500) {
+          lastError = new RepoSiteError('GITHUB_ERROR', `GitHub 服务异常 (${status})。`);
           await delay(300 * (attempt + 1));
           continue;
         }
         if (!response.ok) {
-          throw new RepoSiteError('GITHUB_ERROR', `GitHub 请求失败 (${response.status})。`);
+          throw new RepoSiteError('GITHUB_ERROR', `GitHub 请求失败 (${status})。`);
         }
-        return (await response.json()) as T;
+        return response;
       } catch (error) {
         if (error instanceof RepoSiteError) throw error;
         lastError = error;
@@ -223,6 +344,24 @@ export class GitHubClient {
     throw lastError instanceof RepoSiteError
       ? lastError
       : new RepoSiteError('GITHUB_ERROR', '读取 GitHub 仓库失败，请检查网络或仓库地址。');
+  }
+
+  /** Turns the rate limit headers into something the user can act on. */
+  private rateLimitMessage(response: Response, source: 'api' | 'content'): string {
+    if (source === 'content') {
+      return 'GitHub 内容服务触发了限流，请稍后重试。';
+    }
+    const limit = Number(response.headers.get('x-ratelimit-limit') ?? '');
+    const resetAt = resetAtEpochMs(response);
+    const parts: string[] = [];
+    if (Number.isFinite(limit) && limit > 60) {
+      parts.push(`GitHub API 调用频率超限（当前配额 ${limit} 次/小时）。`);
+    } else {
+      parts.push('GitHub API 调用频率超限（未使用 Token 时每个 IP 每小时只有 60 次）。');
+    }
+    if (resetAt) parts.push(`配额将于 ${formatClock(resetAt)} 恢复。`);
+    parts.push('填写 GitHub Token 可把配额提升到 5000 次/小时。');
+    return parts.join('');
   }
 }
 
@@ -261,4 +400,27 @@ export function base64ToBytes(input: string): Uint8Array {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Encodes a repository path segment by segment, keeping the slashes intact. */
+function encodePathSegments(path: string): string {
+  return path
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
+function resetAtEpochMs(response: Response): number | undefined {
+  const reset = response.headers.get('x-ratelimit-reset');
+  if (!reset) return undefined;
+  const seconds = Number(reset);
+  if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
+  return seconds * 1000;
+}
+
+function formatClock(epochMs: number): string {
+  const date = new Date(epochMs);
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
 }

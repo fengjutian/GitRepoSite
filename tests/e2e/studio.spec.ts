@@ -37,3 +37,11 @@ test('the API key is never written into the local storage', async ({ page }) => 
   const storage = await page.evaluate(() => JSON.stringify(window.localStorage));
   expect(storage).not.toContain('sk-test-key-1234567890');
 });
+
+test('the GitHub token is never written into the local storage', async ({ page }) => {
+  await page.goto('/');
+  await waitForHydration(page);
+  await page.getByLabel(/GitHub Token/).fill('ghp-test-token-1234567890');
+  const storage = await page.evaluate(() => JSON.stringify(window.localStorage));
+  expect(storage).not.toContain('ghp-test-token-1234567890');
+});
