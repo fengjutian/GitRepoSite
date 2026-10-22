@@ -103,7 +103,8 @@ export async function renderMarkdown(
     .use(remarkParse)
     .use(remarkGfm)
     .use(remarkRehype)
-    .use(rehypeSlug, { prefix: '' })
+    // rehype-sanitize applies its own "user-content-" clobber prefix to the ids.
+    .use(rehypeSlug)
     .use(rehypeSanitize, sanitizeSchema as never)
     .use(rehypeShiki, { enabled: options.highlight !== false })
     .use(rehypeStringify, { allowDangerousHtml: true });
