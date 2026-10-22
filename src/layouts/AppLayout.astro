@@ -1,0 +1,47 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = 'RepoSite — 把公开 GitHub 仓库变成结构清晰的文档站点',
+  description = 'RepoSite 读取公开 GitHub 仓库的 README、文档与元数据，生成语义化 HTML、Markdown 与 JSON 索引，便于人和 AI 系统检索。',
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta name="generator" content={Astro.generator} />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%93%9A%3C/text%3E%3C/svg%3E" />
+  </head>
+  <body class="min-h-screen">
+    <header class="border-b border-border">
+      <div class="mx-auto flex w-full max-w-6xl items-center justify-between px-4 py-4">
+        <a href="/" class="text-base font-semibold">RepoSite</a>
+        <nav class="flex items-center gap-4 text-sm text-muted-foreground">
+          <a href="/" class="hover:text-foreground">生成</a>
+          <a href="/project-config" class="hover:text-foreground">项目配置</a>
+          <a href="/docs/REPOSITE_SPEC" class="hover:text-foreground">技术文档</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <slot />
+    </main>
+
+    <footer class="border-t border-border">
+      <div class="mx-auto w-full max-w-6xl px-4 py-6 text-xs text-muted-foreground">
+        RepoSite 仅处理公开仓库，不执行仓库中的任何脚本；生成内容保留原始来源与许可证信息。优化发现与解析能力不代表第三方 AI 一定会抓取或用于训练。
+      </div>
+    </footer>
+  </body>
+</html>

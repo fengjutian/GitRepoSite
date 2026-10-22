@@ -1,0 +1,15 @@
+---
+import AppLayout from '../layouts/AppLayout.astro';
+import ConfigPanel from '../components/config-panel';
+---
+
+<AppLayout>
+  <section class="mx-auto w-full max-w-3xl px-4 pt-8">
+    <h1 class="text-2xl font-semibold tracking-tight">项目配置</h1>
+    <p class="mt-2 text-sm text-muted-foreground">
+      配置 AI 服务商、Key 模式与默认生成语言。此路由独立于主导航，避免把全部配置项堆在首页。
+    </p>
+  </section>
+
+  <ConfigPanel client:load />
+</AppLayout>
