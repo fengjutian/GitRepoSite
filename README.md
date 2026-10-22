@@ -94,3 +94,10 @@ Netlify 已在 `netlify.toml` 中配置好：构建命令 `npm run build`，发�
 - 单次任务最多复制 50 张本地图片；外部图片默认保留外链，可选通过服务端代理下载（带 SSRF 防护）。
 - 未发现 LICENSE 时必须由用户明确确认后才能继续；RepoSite 不授予任何授权。
 - RepoSite 能改善内容的可发现性，但不能保证第三方 AI 系统一定抓取、索引或用于训练。
+- 源 Markdown 中的原始 HTML（含 `<picture>`、`<center>`、徽章块等）在渲染时会被丢弃，只保留安全的标签与属性。
+  这是刻意的安全策略：渲染管线不执行也不透传原始 HTML。若某个仓库的视觉信息几乎全部依赖原始 HTML，
+  生成页会明显缺少徽章与居中排版。
+- `llms.txt` / `llms-full.txt` / `markdown/` 中的内容与页面使用同一套链接重写结果：
+  生成页面 → 站内地址，仓库文件或目录 → 固定 commit 的仓库地址，无法解析的相对链接保留原样并给出警告。
+- 仓库 README 占用 `markdown/readme.md` 时，站点总览输出为 `markdown/README-home.md`，
+  以避免在 Windows / macOS 上解压 ZIP 时互相覆盖。

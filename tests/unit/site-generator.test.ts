@@ -193,8 +193,8 @@ describe('generateSite', () => {
       title: 'Demo README',
       contentMarkdown:
         '# Demo README\n\n' +
-        '| ![logo](assets/logo.png)](packages/vite) |\n' +
-        '| ![remote](https://img.shields.io/npm/v/vite.svg)](LICENSE) |\n',
+        '| [![logo](assets/logo.png)](packages/vite) |\n' +
+        '| [![remote](https://img.shields.io/npm/v/vite.svg)](LICENSE) |\n',
       sourcePath: 'README.md',
       sourceCommitSha: 'b'.repeat(40),
       origin: 'repository',
