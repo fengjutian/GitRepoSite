@@ -198,7 +198,7 @@ export function assertPublicUrl(rawUrl: string): URL {
     throw new RepoSiteError('UNSAFE_URL', '外部资源只允许 http/https。');
   }
   const hostname = parsed.hostname.toLowerCase();
-  if (BLOCKED_HOSTNAMES.includes(hostname) || BLOCKED_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix))) {
+  if (BLOCKED_HOSTNAMES.has(hostname) || BLOCKED_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix))) {
     throw new RepoSiteError('UNSAFE_URL', '外部资源地址指向内部主机。');
   }
   if (isIpAddress(hostname) && !isPublicIp(hostname)) {

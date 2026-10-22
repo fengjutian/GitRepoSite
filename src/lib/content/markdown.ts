@@ -52,7 +52,38 @@ const sanitizeSchema = {
 
 interface ShikiHighlighter {
   codeToHtml(code: string, options: { lang: string; theme: string }): string;
+  loadLanguage(language: unknown): Promise<void>;
 }
+
+/** Languages that are bundled with the generator; everything else stays plain text. */
+const LANGUAGE_LOADERS: Record<string, () => Promise<{ default: unknown }>> = {
+  bash: () => import('shiki/dist/langs/bash.mjs'),
+  c: () => import('shiki/dist/langs/c.mjs'),
+  cpp: () => import('shiki/dist/langs/cpp.mjs'),
+  csharp: () => import('shiki/dist/langs/csharp.mjs'),
+  css: () => import('shiki/dist/langs/css.mjs'),
+  diff: () => import('shiki/dist/langs/diff.mjs'),
+  dockerfile: () => import('shiki/dist/langs/dockerfile.mjs'),
+  go: () => import('shiki/dist/langs/go.mjs'),
+  html: () => import('shiki/dist/langs/html.mjs'),
+  java: () => import('shiki/dist/langs/java.mjs'),
+  javascript: () => import('shiki/dist/langs/javascript.mjs'),
+  json: () => import('shiki/dist/langs/json.mjs'),
+  jsx: () => import('shiki/dist/langs/jsx.mjs'),
+  markdown: () => import('shiki/dist/langs/markdown.mjs'),
+  php: () => import('shiki/dist/langs/php.mjs'),
+  python: () => import('shiki/dist/langs/python.mjs'),
+  ruby: () => import('shiki/dist/langs/ruby.mjs'),
+  rust: () => import('shiki/dist/langs/rust.mjs'),
+  shell: () => import('shiki/dist/langs/shell.mjs'),
+  sql: () => import('shiki/dist/langs/sql.mjs'),
+  tsx: () => import('shiki/dist/langs/tsx.mjs'),
+  typescript: () => import('shiki/dist/langs/typescript.mjs'),
+  xml: () => import('shiki/dist/langs/xml.mjs'),
+  yaml: () => import('shiki/dist/langs/yaml.mjs'),
+};
+
+const loadedLanguages = new Set<string>();
 
 let shikiHighlighterPromise: Promise<ShikiHighlighter | null> | null = null;
 
@@ -72,7 +103,7 @@ export async function renderMarkdown(
 
   const mdast = processor.parse(markdown ?? '');
   const hast = (await processor.run(mdast)) as unknown as HastNode;
-  const html = String(await processor.stringify(hast));
+  const html = String(await processor.stringify(hast as never));
 
   const headings: Heading[] = [];
   const links: MarkdownLink[] = [];
@@ -127,24 +158,31 @@ function rehypeShiki(options: { enabled: boolean }) {
     const highlighter = await loadShiki();
     if (!highlighter) return tree;
 
+    const blocks: Array<{ node: HastNode; parent: HastNode; code: HastNode }> = [];
     walkHast(tree, (node, parent) => {
       if (!parent || node.type !== 'element' || node.tagName !== 'pre') return;
       const code = node.children?.find((child) => child.type === 'element' && child.tagName === 'code');
       if (!code) return;
-      const source = textContent(code);
-      if (!source.trim()) return;
+      blocks.push({ node, parent, code });
+    });
+
+    for (const block of blocks) {
+      const source = textContent(block.code);
+      if (!source.trim()) continue;
+      const lang = detectLanguage(block.code);
+      if (!(await ensureLanguage(highlighter, lang))) continue;
       try {
         const highlighted = highlighter.codeToHtml(source, {
-          lang: detectLanguage(code),
+          lang,
           theme: 'github-dark',
         });
-        parent.children = (parent.children ?? []).map((child) =>
-          child === node ? { type: 'raw', value: highlighted } : child,
+        block.parent.children = (block.parent.children ?? []).map((child) =>
+          child === block.node ? { type: 'raw', value: highlighted } : child,
         );
       } catch {
         // Unknown language: keep the sanitized plain code block.
       }
-    });
+    }
 
     return tree;
   };
@@ -161,10 +199,15 @@ async function loadShiki(): Promise<ShikiHighlighter | null> {
   if (!shikiHighlighterPromise) {
     shikiHighlighterPromise = (async () => {
       try {
-        const shiki = await import('shiki');
-        return (await shiki.createHighlighter({
-          themes: ['github-dark'],
+        const [{ createHighlighterCore }, { createJavaScriptRegexEngine }, { bundledThemes }] = await Promise.all([
+          import('shiki/core'),
+          import('shiki/engine/javascript'),
+          import('shiki/themes'),
+        ]);
+        return (await createHighlighterCore({
+          themes: [bundledThemes['github-dark']],
           langs: [],
+          engine: createJavaScriptRegexEngine(),
         })) as unknown as ShikiHighlighter;
       } catch {
         return null;
@@ -172,6 +215,22 @@ async function loadShiki(): Promise<ShikiHighlighter | null> {
     })();
   }
   return shikiHighlighterPromise;
+}
+
+/** Loads a language grammar on demand; unknown languages stay unhighlighted. */
+async function ensureLanguage(highlighter: ShikiHighlighter, lang: string): Promise<boolean> {
+  const loader = LANGUAGE_LOADERS[lang];
+  if (!loader) return false;
+  if (!loadedLanguages.has(lang)) {
+    try {
+      const module = await loader();
+      await highlighter.loadLanguage(module.default);
+      loadedLanguages.add(lang);
+    } catch {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function walkHast(

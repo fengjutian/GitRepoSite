@@ -138,13 +138,17 @@ export default function Studio() {
           model: undefined,
           userApiKey: keyMode === 'byok' ? userApiKey : undefined,
           systemPrompt: buildSystemPrompt(language),
-          userPrompt: buildProjectPrompt({
-            repositoryName: content.metadata.name,
-            description: content.metadata.description,
-            readme: content.readmeMarkdown.slice(0, 12000),
-            fileTree: content.fileTreeSummary.slice(0, 4000),
+          userPrompt: buildProjectPrompt(
+            {
+              repositoryName: content.metadata.name,
+              description: content.metadata.description,
+              readme: content.readmeMarkdown,
+              documentTitles: content.documents.map((document) => document.title),
+              fileTreeSummary: content.fileTreeSummary,
+              license: content.license.identifier ?? content.license.status,
+            },
             language,
-          }),
+          ),
         }),
       });
 
