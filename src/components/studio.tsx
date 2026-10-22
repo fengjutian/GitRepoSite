@@ -269,6 +269,7 @@ export default function Studio() {
         documents,
         assets: content.assets,
         binaryAssets: content.binaryAssets,
+        repositoryPaths: content.repositoryPaths,
         language,
         summary: ai.summary?.summary,
         highlights: ai.summary?.highlights,

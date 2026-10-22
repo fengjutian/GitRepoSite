@@ -28,6 +28,16 @@ const SCRIPT_PATTERNS = [
   /<embed[\s>]/i,
 ];
 
+/**
+ * Removes fenced code blocks and inline code before scanning for active content.
+ * Documentation about HTML or JavaScript must not be reported as an attack.
+ */
+export function stripCodeSpans(markdown: string): string {
+  return markdown
+    .replace(/^(?: {0,3})(`{3,}|~{3,})[^\n]*\n[\s\S]*?^(?: {0,3})\1[^\n]*$/gm, ' ')
+    .replace(/`[^`\n]*`/g, ' ');
+}
+
 export const MAX_LOCAL_IMAGES = 50;
 
 /** Runs the deterministic pre-generation audit described in the specification. */
@@ -36,14 +46,16 @@ export function runAudit(input: AuditInput): AuditReport {
 
   for (const document of input.documents) {
     const markdown = document.contentMarkdown ?? '';
-    if (SCRIPT_PATTERNS.some((pattern) => pattern.test(markdown))) {
+    // The renderer drops raw HTML and sanitizes the rest, so active content never
+    // reaches the output. It is reported so the author can rewrite the passage.
+    if (SCRIPT_PATTERNS.some((pattern) => pattern.test(stripCodeSpans(markdown)))) {
       issues.push({
         id: 'security-unsafe-content',
-        severity: 'blocking',
+        severity: 'warning',
         category: 'security',
-        message: '文档内容中检测到脚本或主动内容，必须先移除。',
+        message: '文档内容中检测到脚本或主动内容，生成时会被丢弃。',
         target: document.slug,
-        hint: 'Markdown 中的原始 HTML 会被丢弃，请改写该段落。',
+        hint: '该内容不会出现在生成站点中；如需保留，请改写为文字说明或代码块。',
       });
     }
     if (!document.title.trim()) {

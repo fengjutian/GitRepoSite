@@ -29,6 +29,8 @@ export interface SiteInput {
   tags?: string[];
   audience?: string;
   siteOrigin?: string;
+  /** every file and directory path of the source repository */
+  repositoryPaths?: string[];
   audit?: AuditReport;
 }
 
@@ -68,6 +70,8 @@ export async function generateSite(input: SiteInput): Promise<GeneratedSite> {
     if (document.sourcePath) pagePathBySourcePath.set(document.sourcePath, `/docs/${document.slug}.html`);
   }
 
+  const repositoryPaths = new Set(input.repositoryPaths ?? []);
+
   const siteTitle = metadata.name;
   const siteDescription = metadata.description || markdownToPlainText(metadata.description, 200);
   const baseOptions = {
@@ -81,6 +85,7 @@ export async function generateSite(input: SiteInput): Promise<GeneratedSite> {
 
   // --- Documentation pages -------------------------------------------------
   const pageSummaries: Array<{ title: string; href: string; summary: string; sourcePath?: string }> = [];
+  const rewrittenBySlug = new Map<string, string>();
 
   for (const document of ordered) {
     const markdown = rewriteDocument(
@@ -89,6 +94,7 @@ export async function generateSite(input: SiteInput): Promise<GeneratedSite> {
       assetUrlByPath,
       pagePathBySourcePath,
       metadata,
+      repositoryPaths,
     );
     const rendered = await renderMarkdown(markdown, { highlight: true });
     // The page template already renders the title, so a leading H1 in the source is dropped.
@@ -105,6 +111,7 @@ export async function generateSite(input: SiteInput): Promise<GeneratedSite> {
     });
     files.push({ path: `docs/${document.slug}.html`, content: html });
     files.push({ path: `markdown/${document.slug}.md`, content: markdown });
+    rewrittenBySlug.set(document.slug, markdown);
 
     pageSummaries.push({
       title: document.title,
@@ -164,7 +171,7 @@ export async function generateSite(input: SiteInput): Promise<GeneratedSite> {
   files.push({ path: 'ai/pages.json', content: buildPagesJson(input, ordered) });
   files.push({ path: 'ai/chunks.json', content: buildChunksJson(input, ordered) });
   files.push({ path: 'llms.txt', content: buildLlmsTxt(input, ordered, pageSummaries) });
-  files.push({ path: 'llms-full.txt', content: buildLlmsFullTxt(input, ordered) });
+  files.push({ path: 'llms-full.txt', content: buildLlmsFullTxt(input, ordered, rewrittenBySlug) });
   files.push({ path: 'robots.txt', content: buildRobotsTxt(input.siteOrigin) });
   files.push({ path: 'sitemap.xml', content: buildSitemap(input, ordered, pageSummaries) });
 
@@ -233,6 +240,7 @@ export function rewriteDocument(
   assetUrlByPath: Map<string, string>,
   pagePathBySourcePath: Map<string, string>,
   metadata: ProjectMetadata,
+  repositoryPaths?: ReadonlySet<string>,
 ): string {
   let output = markdown;
 
@@ -261,14 +269,49 @@ export function rewriteDocument(
     if (pagePathBySourcePath.has(resolved)) {
       return `[${label}](${pagePathBySourcePath.get(resolved)})`;
     }
-    if (/\.md$/i.test(resolved)) {
-      const base = metadata.repositoryUrl.replace(/\/+$/, '');
-      return `[${label}](${base}/blob/${metadata.sourceCommitSha}/${resolved})`;
-    }
+    const suffix = stripQueryAndHashTail(href);
+    const pinned = pinnedRepositoryUrl(metadata, resolved, repositoryPaths, suffix);
+    if (pinned) return `[${label}](${pinned})`;
     return match;
   });
 
   return output;
+}
+
+/**
+ * Points a link at the pinned commit when the target exists in the repository but
+ * was not published as a page. Monorepo links such as `packages/vite` would
+ * otherwise stay relative and break inside the generated site.
+ */
+function pinnedRepositoryUrl(
+  metadata: ProjectMetadata,
+  resolved: string,
+  repositoryPaths: ReadonlySet<string> | undefined,
+  suffix: string,
+): string | undefined {
+  const base = metadata.repositoryUrl.replace(/\/+$/, '');
+  if (/\.md$/i.test(resolved)) {
+    return `${base}/blob/${metadata.sourceCommitSha}/${resolved}${suffix}`;
+  }
+  if (!repositoryPaths?.has(resolved)) return undefined;
+  if (hasBlobAt(repositoryPaths, resolved)) {
+    return `${base}/blob/${metadata.sourceCommitSha}/${resolved}${suffix}`;
+  }
+  return `${base}/tree/${metadata.sourceCommitSha}/${resolved}${suffix}`;
+}
+
+function hasBlobAt(repositoryPaths: ReadonlySet<string>, path: string): boolean {
+  // A path that is itself a directory has children, so it must use the tree route.
+  const prefix = `${path}/`;
+  for (const candidate of repositoryPaths) {
+    if (candidate.startsWith(prefix)) return false;
+  }
+  return true;
+}
+
+function stripQueryAndHashTail(href: string): string {
+  const index = href.search(/[?#]/);
+  return index === -1 ? '' : href.slice(index);
 }
 
 function resolveMaybe(sourcePath: string | undefined, reference: string): string | undefined {
@@ -437,7 +480,7 @@ function buildLlmsTxt(
   return lines.join('\n');
 }
 
-function buildLlmsFullTxt(input: SiteInput, ordered: DocumentPage[]): string {
+function buildLlmsFullTxt(input: SiteInput, ordered: DocumentPage[], rewrittenBySlug: Map<string, string>): string {
   const { metadata } = input;
   const parts: string[] = [];
   parts.push(`# ${metadata.name}`);
@@ -452,7 +495,7 @@ function buildLlmsFullTxt(input: SiteInput, ordered: DocumentPage[]): string {
     if (document.sourcePath) {
       parts.push(`<!-- source: ${document.sourcePath} -->`);
     }
-    parts.push(document.contentMarkdown);
+    parts.push(rewrittenBySlug.get(document.slug) ?? document.contentMarkdown);
     parts.push('');
   }
   return parts.join('\n');

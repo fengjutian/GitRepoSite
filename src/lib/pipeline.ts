@@ -34,6 +34,8 @@ export interface RepositoryContent {
   binaryAssets: Map<string, Uint8Array>;
   imageReferences: Map<string, string[]>;
   license: LicenseInfo;
+  /** every file and directory path of the repository, used to resolve internal links */
+  repositoryPaths: string[];
   treeTruncated: boolean;
   fileTreeSummary: string;
   readmeMarkdown: string;
@@ -228,6 +230,7 @@ export async function loadRepository(
     binaryAssets,
     imageReferences,
     license,
+    repositoryPaths: collectRepositoryPaths(entries.map((entry) => entry.path)),
     treeTruncated: tree.truncated,
     fileTreeSummary: summarizeTree(entries.map((entry) => entry.path)),
     readmeMarkdown,
@@ -255,6 +258,7 @@ export async function auditRepository(
     ),
     knownSlugs: new Set(documents.map((document) => document.slug)),
     knownRoutes,
+    knownRepositoryPaths: new Set(content.repositoryPaths ?? []),
   });
 
   const imageIssues = [];
@@ -376,6 +380,19 @@ export function extractImageReferences(markdown: string): string[] {
     htmlMatch = htmlPattern.exec(markdown);
   }
   return references;
+}
+
+/** Every file path plus each of its parent directories, so directory links can be resolved. */
+export function collectRepositoryPaths(paths: string[]): string[] {
+  const collected = new Set<string>();
+  for (const path of paths) {
+    collected.add(path);
+    const segments = path.split('/');
+    for (let index = 1; index < segments.length; index += 1) {
+      collected.add(segments.slice(0, index).join('/'));
+    }
+  }
+  return [...collected].sort();
 }
 
 function summarizeTree(paths: string[]): string {

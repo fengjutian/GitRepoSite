@@ -26,15 +26,32 @@ function document(overrides: Partial<DocumentPage> = {}): DocumentPage {
 }
 
 describe('runAudit', () => {
-  it('blocks unsafe active content', () => {
+  it('warns about active content instead of blocking the export', () => {
     const report = runAudit({
       metadata,
       documents: [document({ contentMarkdown: '<script>alert(1)</script>' })],
       assets: [],
       license: { status: 'detected', identifier: 'MIT' },
     });
-    expect(report.blockingCount).toBeGreaterThan(0);
-    expect(report.issues.some((issue) => issue.id === 'security-unsafe-content')).toBe(true);
+    expect(report.blockingCount).toBe(0);
+    expect(
+      report.issues.some((issue) => issue.id === 'security-unsafe-content' && issue.severity === 'warning'),
+    ).toBe(true);
+  });
+
+  it('does not treat code samples as active content', () => {
+    const report = runAudit({
+      metadata,
+      documents: [
+        document({
+          contentMarkdown:
+            '# Guide\n\n```html\n<script>alert(1)</script>\n```\n\nUse `<iframe>` with care.\n',
+        }),
+      ],
+      assets: [],
+      license: { status: 'detected', identifier: 'MIT' },
+    });
+    expect(report.issues.some((issue) => issue.id === 'security-unsafe-content')).toBe(false);
   });
 
   it('warns when no license was found', () => {
@@ -87,7 +104,7 @@ describe('runAudit', () => {
 });
 
 describe('auditInternalLinks', () => {
-  it('blocks links to unknown documents', () => {
+  it('warns about links to unknown documents', () => {
     const issues = auditInternalLinks(
       [
         {
@@ -103,7 +120,71 @@ describe('auditInternalLinks', () => {
       },
     );
     expect(issues).toHaveLength(1);
-    expect(issues[0]!.severity).toBe('blocking');
+    expect(issues[0]!.severity).toBe('warning');
+    expect(issues[0]!.id).toBe('link-missing-document');
+  });
+
+  it('accepts repository links that are published as pinned commit URLs', () => {
+    const issues = auditInternalLinks(
+      [
+        {
+          slug: 'readme',
+          sourcePath: 'README.md',
+          links: [
+            { href: 'packages/vite', text: 'vite', kind: 'internal' },
+            { href: 'LICENSE', text: 'license', kind: 'internal' },
+          ],
+        },
+      ],
+      {
+        knownSourcePaths: new Set(['README.md']),
+        knownSlugs: new Set(['readme']),
+        knownRoutes: new Set(['/docs/readme.html']),
+        knownRepositoryPaths: new Set(['README.md', 'LICENSE', 'packages/vite/README.md']),
+      },
+    );
+    expect(issues).toHaveLength(0);
+  });
+
+  it('warns when a repository link matches nothing at all', () => {
+    const issues = auditInternalLinks(
+      [
+        {
+          slug: 'readme',
+          sourcePath: 'README.md',
+          links: [{ href: 'nowhere/at/all', text: 'missing', kind: 'internal' }],
+        },
+      ],
+      {
+        knownSourcePaths: new Set(['README.md']),
+        knownSlugs: new Set(['readme']),
+        knownRoutes: new Set(['/docs/readme.html']),
+        knownRepositoryPaths: new Set(['README.md']),
+      },
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.id).toBe('link-unresolved');
+    expect(issues[0]!.severity).toBe('warning');
+  });
+
+  it('warns about absolute routes that only exist on the source host', () => {
+    const issues = auditInternalLinks(
+      [
+        {
+          slug: 'guide',
+          sourcePath: 'docs/guide.md',
+          links: [{ href: '/team', text: 'team', kind: 'internal' }],
+        },
+      ],
+      {
+        knownSourcePaths: new Set(['docs/guide.md']),
+        knownSlugs: new Set(['guide']),
+        knownRoutes: new Set(['/docs/guide.html']),
+      },
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.id).toBe('link-missing-route');
+    expect(issues[0]!.severity).toBe('warning');
   });
 
   it('accepts links to known documents', () => {

@@ -148,4 +148,42 @@ describe('generateSite', () => {
     const site = await generateSite({ metadata, documents, assets, language: 'zh-CN' });
     expect(site.files.map((file) => file.path)).toContain('markdown/README.md');
   });
+
+  it('publishes rewritten references in llms-full.txt', async () => {
+    const site = await generateSite({ metadata, documents, assets, language: 'zh-CN' });
+    const llmsFull = site.files.find((file) => file.path === 'llms-full.txt')!.content as string;
+
+    expect(llmsFull).toContain('/assets/images/logo-abc123.png');
+    expect(llmsFull).not.toContain('../assets/logo.png');
+    expect(llmsFull).toContain(`https://github.com/owner/demo/blob/${'b'.repeat(40)}/docs/other.md`);
+  });
+
+  it('points links at repository files and directories at the pinned commit', async () => {
+    const withRepoLinks: DocumentPage[] = [
+      {
+        slug: 'readme',
+        title: 'Demo README',
+        contentMarkdown:
+          '# Demo README\n\n- [package](packages/vite)\n- [license](LICENSE)\n- [missing](nowhere)\n',
+        sourcePath: 'README.md',
+        sourceCommitSha: 'b'.repeat(40),
+        origin: 'repository',
+        verification: 'source_verified',
+        order: 0,
+        summary: 'Overview',
+      },
+    ];
+    const site = await generateSite({
+      metadata,
+      documents: withRepoLinks,
+      assets,
+      language: 'zh-CN',
+      repositoryPaths: ['LICENSE', 'README.md', 'packages', 'packages/vite', 'packages/vite/README.md'],
+    });
+    const markdown = site.files.find((file) => file.path === 'markdown/readme.md')!.content as string;
+
+    expect(markdown).toContain(`https://github.com/owner/demo/tree/${'b'.repeat(40)}/packages/vite`);
+    expect(markdown).toContain(`https://github.com/owner/demo/blob/${'b'.repeat(40)}/LICENSE`);
+    expect(markdown).toContain('[missing](nowhere)');
+  });
 });

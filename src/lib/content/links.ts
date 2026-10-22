@@ -18,17 +18,24 @@ export interface LinkAuditContext {
   knownSlugs: Set<string>;
   /** routes published by the generator */
   knownRoutes: Set<string>;
+  /** every file and directory path in the repository, used to tell "not published" from "missing" */
+  knownRepositoryPaths?: Set<string>;
 }
 
 /**
- * Checks internal links against the known documents. Links that cannot be resolved
- * are reported as blocking issues so the user can fix or remove them.
+ * Checks internal links against the known documents.
+ *
+ * A link that points at a repository file or directory that exists but was not
+ * published as a page is rewritten to the pinned commit, so it is not reported.
+ * Anything that resolves nowhere is reported as a warning: the source document
+ * is somebody else's content, so it must not block an export.
  */
 export function auditInternalLinks(
   inputs: LinkAuditInput[],
   context: LinkAuditContext,
 ): AuditIssue[] {
   const issues: AuditIssue[] = [];
+  const repositoryPaths = context.knownRepositoryPaths ?? new Set<string>();
 
   for (const input of inputs) {
     for (const link of input.links) {
@@ -42,11 +49,11 @@ export function auditInternalLinks(
         if (!context.knownRoutes.has(target)) {
           issues.push({
             id: 'link-missing-route',
-            severity: 'blocking',
+            severity: 'warning',
             category: 'link',
             message: `内部链接指向不存在的页面: ${target}`,
             target: `${input.slug} → ${target}`,
-            hint: '请修正链接或移除该引用。',
+            hint: '该地址只在原站点有效，生成站点中会失效，请确认是否保留。',
           });
         }
         continue;
@@ -54,18 +61,20 @@ export function auditInternalLinks(
 
       if (isMarkdownPath(target)) {
         const resolved = resolveTarget(input.sourcePath, target);
-        if (resolved && !context.knownSourcePaths.has(resolved)) {
+        if (resolved && !context.knownSourcePaths.has(resolved) && !repositoryPaths.has(resolved)) {
           issues.push({
             id: 'link-missing-document',
-            severity: 'blocking',
+            severity: 'warning',
             category: 'link',
             message: `内部文档链接指向不存在的文件: ${target}`,
             target: `${input.slug} → ${target}`,
-            hint: '请修正链接或移除该引用。',
+            hint: '请确认是否保留该引用。',
           });
         }
         continue;
       }
+
+      if (resolvesInsideRepository(input.sourcePath, target, repositoryPaths)) continue;
 
       const slugMatch = [...context.knownSlugs].some(
         (slug) => slug === target || slug.endsWith(`/${target}`),
@@ -74,17 +83,34 @@ export function auditInternalLinks(
       if (!slugMatch && !routeMatch) {
         issues.push({
           id: 'link-unresolved',
-          severity: 'blocking',
+          severity: 'warning',
           category: 'link',
-          message: `内部链接无法解析到已生成页面: ${target}`,
+          message: `内部链接无法解析: ${target}`,
           target: `${input.slug} → ${target}`,
-          hint: '请修正链接或移除该引用。',
+          hint: '目标不在仓库中，该链接在生成站点中会失效，请确认是否保留。',
         });
       }
     }
   }
 
   return issues;
+}
+
+/** True when the target resolves to an existing file or directory of the repository. */
+function resolvesInsideRepository(
+  sourcePath: string | undefined,
+  target: string,
+  repositoryPaths: Set<string>,
+): boolean {
+  const resolved = resolveTarget(sourcePath, target);
+  if (!resolved) return false;
+  if (repositoryPaths.has(resolved)) return true;
+  // Directory links are common in monorepos: `packages/vite` has no blob entry.
+  const prefix = `${resolved}/`;
+  for (const candidate of repositoryPaths) {
+    if (candidate.startsWith(prefix)) return true;
+  }
+  return false;
 }
 
 function resolveTarget(sourcePath: string | undefined, target: string): string | undefined {
