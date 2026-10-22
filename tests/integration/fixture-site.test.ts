@@ -35,7 +35,8 @@ const documents: DocumentPage[] = [
     slug: 'docs-guide',
     title: 'Guide',
     summary: 'How to use the demo project.',
-    contentMarkdown: '# Guide\n\nStep by step instructions.\n\nSee the [README](../README.md).\n',
+    contentMarkdown:
+      '# Guide\n\nStep by step instructions.\n\nSee the [README](../README.md) and the [licence](../LICENSE).\n',
     sourcePath: 'docs/guide.md',
     sourceCommitSha: 'a'.repeat(40),
     origin: 'repository',
@@ -63,6 +64,15 @@ describe('fixture site', () => {
       documents,
       assets,
       binaryAssets: new Map([['assets/images/diagram.svg', new Uint8Array([60, 115, 118, 103, 62])]]),
+      repositoryPaths: [
+        'LICENSE',
+        'README.md',
+        'assets',
+        'assets/images',
+        'assets/images/diagram.svg',
+        'docs',
+        'docs/guide.md',
+      ],
       language: 'zh-CN',
       summary: '由 AI 生成的简介（推断内容）。',
       highlights: ['开箱即用', '类型安全'],
@@ -86,5 +96,14 @@ describe('fixture site', () => {
     expect(paths).toContain('markdown/docs-guide.md');
     expect(paths).toContain('llms.txt');
     expect(paths).toContain('ai/manifest.json');
+    expect(paths).toContain('markdown/README-home.md');
+
+    // A link to a generated page stays internal, a link to another repository file is
+// pinned to the commit so it still works outside the generated site.
+    const guideMarkdown = site.files.find((file) => file.path === 'markdown/docs-guide.md')!.content as string;
+    expect(guideMarkdown).toContain('[README](/docs/readme.html)');
+    expect(guideMarkdown).toContain(
+      `[licence](https://github.com/demo/demo-project/blob/${'a'.repeat(40)}/LICENSE)`,
+    );
   });
 });

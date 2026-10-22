@@ -245,37 +245,70 @@ export function rewriteDocument(
   let output = markdown;
 
   output = output.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (match, alt: string, src: string) => {
-    if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith('//') || src.startsWith('#')) return match;
-    const resolved = resolveMaybe(sourcePath, src);
-    if (!resolved) return match;
-    const url = assetUrlByPath.get(resolved);
-    if (!url) return match;
-    return `![${alt}](${url})`;
+    const url = resolveAssetTarget(src, sourcePath, assetUrlByPath);
+    return url ? `![${alt}](${url})` : match;
   });
 
   output = output.replace(/<img\s+([^>]*?)src\s*=\s*"([^"]*)"([^>]*)>/gi, (match, before: string, src: string, after: string) => {
-    if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith('//') || src.startsWith('#')) return match;
-    const resolved = resolveMaybe(sourcePath, src);
-    if (!resolved) return match;
-    const url = assetUrlByPath.get(resolved);
-    if (!url) return match;
-    return `<img ${before}src="${url}"${after}>`;
+    const url = resolveAssetTarget(src, sourcePath, assetUrlByPath);
+    return url ? `<img ${before}src="${url}"${after}>` : match;
   });
 
-  output = output.replace(/\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (match, label: string, href: string) => {
-    if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('//') || href.startsWith('#')) return match;
-    const resolved = resolveMaybe(sourcePath, href);
-    if (!resolved) return match;
-    if (pagePathBySourcePath.has(resolved)) {
-      return `[${label}](${pagePathBySourcePath.get(resolved)})`;
+  output = output.replace(IMAGE_LINK_PATTERN, (match, label: string, href: string) => {
+    if (isExternalReference(href)) return match;
+    // `[![badge](badge.svg)](packages/vite/CHANGELOG.md)` is the standard README
+    // table layout, so the nested image and the link have to be rewritten together.
+    const nested = /^\[!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)\]$/.exec(label);
+    const resolvedHref = resolveLinkTarget(href, sourcePath, pagePathBySourcePath, metadata, repositoryPaths);
+    if (!nested) {
+      return resolvedHref ? `[${label}](${resolvedHref})` : match;
     }
-    const suffix = stripQueryAndHashTail(href);
-    const pinned = pinnedRepositoryUrl(metadata, resolved, repositoryPaths, suffix);
-    if (pinned) return `[${label}](${pinned})`;
-    return match;
+
+    const nestedSrc = nested[2]!;
+    const assetUrl = resolveAssetTarget(nestedSrc, sourcePath, assetUrlByPath);
+    const inner = assetUrl ? `![${nested[1]}](${assetUrl})` : `[${nested[0]}]`;
+    return `[${inner}](${resolvedHref ?? href})`;
   });
 
   return output;
+}
+
+/** Matches `[![alt](src)](href)` before the plain `[alt](href)` form. */
+const IMAGE_LINK_PATTERN =
+  /\[(!?\[[^\]]*\]\([^)\s]*(?:\s+"[^"]*")?\)|[^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+
+function isExternalReference(reference: string): boolean {
+  return (
+    /^[a-z][a-z0-9+.-]*:/i.test(reference) ||
+    reference.startsWith('//') ||
+    reference.startsWith('#')
+  );
+}
+
+function resolveAssetTarget(
+  src: string,
+  sourcePath: string | undefined,
+  assetUrlByPath: Map<string, string>,
+): string | undefined {
+  if (isExternalReference(src)) return undefined;
+  const resolved = resolveMaybe(sourcePath, src);
+  if (!resolved) return undefined;
+  return assetUrlByPath.get(resolved);
+}
+
+function resolveLinkTarget(
+  href: string,
+  sourcePath: string | undefined,
+  pagePathBySourcePath: Map<string, string>,
+  metadata: ProjectMetadata,
+  repositoryPaths: ReadonlySet<string> | undefined,
+): string | undefined {
+  if (isExternalReference(href)) return undefined;
+  const resolved = resolveMaybe(sourcePath, href);
+  if (!resolved) return undefined;
+  const page = pagePathBySourcePath.get(resolved);
+  if (page) return page;
+  return pinnedRepositoryUrl(metadata, resolved, repositoryPaths, stripQueryAndHashTail(href));
 }
 
 /**

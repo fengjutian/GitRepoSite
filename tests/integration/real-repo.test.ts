@@ -39,6 +39,7 @@ describe('repository integration', () => {
       documents: content.documents,
       assets: content.assets,
       binaryAssets: content.binaryAssets,
+      repositoryPaths: content.repositoryPaths,
       language: 'zh-CN',
     });
     const paths = site.files.map((f) => f.path);
@@ -48,6 +49,13 @@ describe('repository integration', () => {
     expect(paths).toContain('sitemap.xml');
     expect(paths).toContain('ai/manifest.json');
     expect(paths).toContain('docs/readme.html');
+
+    // Real repositories link to directories, licences and workflow files constantly.
+    // Those must become pinned repository links instead of dead relative paths.
+    const sha = content.metadata.sourceCommitSha;
+    const readmeMarkdown = site.files.find((f) => f.path === 'markdown/readme.md')!.content as string;
+    expect(readmeMarkdown).not.toMatch(/\]\(packages\/vite\)/);
+    expect(readmeMarkdown).toContain(`https://github.com/vitejs/vite/blob/${sha}/LICENSE`);
 
     const zip = await packageSite(site.files);
     expect(zip.fileCount).toBe(site.files.length);

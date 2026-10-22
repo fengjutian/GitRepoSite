@@ -9,6 +9,7 @@ import {
   pathToSlug,
   resolveRelativePath,
 } from '@/lib/github/paths';
+import { collectRepositoryPaths } from '@/lib/pipeline';
 
 describe('normalizeRepoPath', () => {
   it('normalizes redundant segments', () => {
@@ -63,5 +64,20 @@ describe('path helpers', () => {
     expect(dirnameOf('docs/guide/intro.md')).toBe('docs/guide');
     expect(dirnameOf('README.md')).toBe('');
     expect(pathToSlug('docs/Getting-Started.md')).toBe('docs/getting-started');
+  });
+});
+
+describe('collectRepositoryPaths', () => {
+  it('includes every parent directory so directory links resolve', () => {
+    expect(collectRepositoryPaths(['packages/vite/README.md', 'LICENSE'])).toEqual([
+      'LICENSE',
+      'packages',
+      'packages/vite',
+      'packages/vite/README.md',
+    ]);
+  });
+
+  it('returns an empty list for an empty tree', () => {
+    expect(collectRepositoryPaths([])).toEqual([]);
   });
 });

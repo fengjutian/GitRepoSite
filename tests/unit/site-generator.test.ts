@@ -186,4 +186,36 @@ describe('generateSite', () => {
     expect(markdown).toContain(`https://github.com/owner/demo/blob/${'b'.repeat(40)}/LICENSE`);
     expect(markdown).toContain('[missing](nowhere)');
   });
+
+  it('rewrites README table rows that link a local image', async () => {
+    const row: DocumentPage = {
+      slug: 'readme',
+      title: 'Demo README',
+      contentMarkdown:
+        '# Demo README\n\n' +
+        '| ![logo](assets/logo.png)](packages/vite) |\n' +
+        '| ![remote](https://img.shields.io/npm/v/vite.svg)](LICENSE) |\n',
+      sourcePath: 'README.md',
+      sourceCommitSha: 'b'.repeat(40),
+      origin: 'repository',
+      verification: 'source_verified',
+      order: 0,
+      summary: 'Overview',
+    };
+    const site = await generateSite({
+      metadata,
+      documents: [row],
+      assets,
+      language: 'zh-CN',
+      repositoryPaths: ['LICENSE', 'README.md', 'assets', 'assets/logo.png', 'packages', 'packages/vite', 'packages/vite/index.ts'],
+    });
+    const markdown = site.files.find((file) => file.path === 'markdown/readme.md')!.content as string;
+
+    expect(markdown).toContain(
+      `[![logo](/assets/images/logo-abc123.png)](https://github.com/owner/demo/tree/${'b'.repeat(40)}/packages/vite)`,
+    );
+    expect(markdown).toContain(
+      `[![remote](https://img.shields.io/npm/v/vite.svg)](https://github.com/owner/demo/blob/${'b'.repeat(40)}/LICENSE)`,
+    );
+  });
 });
