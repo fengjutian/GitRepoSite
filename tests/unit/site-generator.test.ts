@@ -114,4 +114,38 @@ describe('generateSite', () => {
       new Map(site.files.map((file) => [file.path, file.content as string]));
     expect(toMap(first)).toEqual(toMap(second));
   });
+
+  it('never emits two files that collide on a case insensitive filesystem', async () => {
+    const withReadme: DocumentPage[] = [
+      ...documents,
+      {
+        slug: 'readme',
+        title: 'Demo README',
+        contentMarkdown: '# Demo README\n\nIntro.',
+        sourcePath: 'README.md',
+        sourceCommitSha: 'b'.repeat(40),
+        origin: 'repository',
+        verification: 'source_verified',
+        order: 1,
+        summary: 'Project overview',
+      },
+    ];
+    const site = await generateSite({ metadata, documents: withReadme, assets, language: 'zh-CN' });
+    const paths = site.files.map((file) => file.path.toLowerCase());
+
+    expect(new Set(paths).size).toBe(paths.length);
+    // `markdown/readme.md` belongs to the repository README, so the overview moves aside.
+    expect(paths).toContain('markdown/readme.md');
+    expect(paths).toContain('markdown/readme-home.md');
+
+    const overview = site.files.find((file) => file.path === 'markdown/README-home.md')!.content as string;
+    const readmeDoc = site.files.find((file) => file.path === 'markdown/readme.md')!.content as string;
+    expect(overview).not.toBe(readmeDoc);
+    expect(readmeDoc).toContain('Demo README');
+  });
+
+  it('keeps the overview markdown at markdown/README.md when no document uses that name', async () => {
+    const site = await generateSite({ metadata, documents, assets, language: 'zh-CN' });
+    expect(site.files.map((file) => file.path)).toContain('markdown/README.md');
+  });
 });

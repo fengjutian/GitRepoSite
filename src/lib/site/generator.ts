@@ -128,7 +128,13 @@ export async function generateSite(input: SiteInput): Promise<GeneratedSite> {
     sourceCommit: metadata.sourceCommitSha,
   });
   files.push({ path: 'index.html', content: homeHtml });
-  files.push({ path: 'markdown/README.md', content: homeMarkdown });
+  files.push({
+    path: uniqueMarkdownPath(
+      'markdown/README.md',
+      new Set(ordered.map((document) => `markdown/${document.slug}.md`.toLowerCase())),
+    ),
+    content: homeMarkdown,
+  });
 
   // --- Docs index ----------------------------------------------------------
   files.push({
@@ -163,7 +169,40 @@ export async function generateSite(input: SiteInput): Promise<GeneratedSite> {
   files.push({ path: 'sitemap.xml', content: buildSitemap(input, ordered, pageSummaries) });
 
   const totalBytes = files.reduce((sum, file) => sum + byteLength(file.content), 0);
+  assertUniquePaths(files);
   return { files, totalBytes, fileCount: files.length };
+}
+
+/**
+ * Picks a markdown path that cannot collide with a document markdown file.
+ * Windows and macOS treat paths case insensitively, so `markdown/readme.md` and
+ * `markdown/README.md` would silently overwrite each other when the archive is
+ * unpacked. The fallback keeps the output identical on every platform.
+ */
+export function uniqueMarkdownPath(preferred: string, takenLowerCase: Set<string>): string {
+  if (!takenLowerCase.has(preferred.toLowerCase())) return preferred;
+  const base = preferred.replace(/\.md$/i, '');
+  let candidate = `${base}-home.md`;
+  let counter = 2;
+  while (takenLowerCase.has(candidate.toLowerCase())) {
+    candidate = `${base}-home-${counter}.md`;
+    counter += 1;
+  }
+  return candidate;
+}
+
+/** Guards against two generated files sharing the same path on a case insensitive filesystem. */
+export function assertUniquePaths(files: GeneratedFile[]): void {
+  const seen = new Set<string>();
+  const duplicates: string[] = [];
+  for (const file of files) {
+    const key = file.path.toLowerCase();
+    if (seen.has(key)) duplicates.push(file.path);
+    seen.add(key);
+  }
+  if (duplicates.length > 0) {
+    throw new Error(`生成结果存在重名文件（大小写不敏感冲突）：${duplicates.join(', ')}`);
+  }
 }
 
 function byteLength(content: string | Uint8Array): number {
