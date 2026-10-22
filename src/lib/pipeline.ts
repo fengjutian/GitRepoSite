@@ -6,6 +6,7 @@ import { GitHubClient, type GitHubClientOptions, type TreeEntry } from './github
 import { parseRepositoryUrl } from './github/url';
 import { isExcludedPath, pathToSlug, slugToTitle } from './github/paths';
 import { collectLocalImageReferences, hashBytes, planLocalImages } from './images/local';
+import { sanitizeSvg } from './images/svg';
 import type {
   AssetRecord,
   AuditReport,
@@ -146,7 +147,26 @@ export async function loadRepository(
       continue;
     }
 
-    const bytes = await client.getBlobBytes(reference, entry.sha);
+    let bytes = await client.getBlobBytes(reference, entry.sha);
+    const extension = extensionOf(candidate.sourcePath);
+    let svgNote: string | undefined;
+    if (extension === '.svg') {
+      const sanitized = sanitizeSvg(new TextDecoder().decode(bytes));
+      if (!/<svg[\s>]/i.test(sanitized.svg)) {
+        assets.push({
+          sourcePath: candidate.sourcePath,
+          type: 'image',
+          handling: 'skipped',
+          auditStatus: 'failed',
+          reason: 'SVG 净化后没有可渲染内容，已跳过。',
+        });
+        continue;
+      }
+      bytes = new TextEncoder().encode(sanitized.svg);
+      if (sanitized.removedElements.length > 0) {
+        svgNote = `已移除 SVG 主动内容: ${sanitized.removedElements.join(', ')}`;
+      }
+    }
     const hash = hashBytes(bytes);
     if (usedHashes.has(hash)) {
       assets.push({
@@ -160,7 +180,6 @@ export async function loadRepository(
     }
     usedHashes.add(hash);
 
-    const extension = extensionOf(candidate.sourcePath);
     const fileName = `${hash}-${sanitizeFileName(baseNameOf(candidate.sourcePath))}${extension}`;
     const outputPath = `assets/images/${fileName}`;
     binaryAssets.set(outputPath, bytes);
@@ -172,6 +191,7 @@ export async function loadRepository(
       auditStatus: 'passed',
       bytes: bytes.byteLength,
       mimeType: MIME_BY_EXTENSION[extension] ?? 'application/octet-stream',
+      reason: svgNote,
     });
   }
 

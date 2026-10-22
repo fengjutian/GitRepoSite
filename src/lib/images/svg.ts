@@ -61,7 +61,7 @@ const DROP_WITH_CONTENT = new Set([
   'listener',
 ]);
 
-const GLOBAL_ATTRIBUTES = new Set([
+const GLOBAL_ATTRIBUTES = new Set<string>([
   'class',
   'id',
   'style',
@@ -168,7 +168,7 @@ const GLOBAL_ATTRIBUTES = new Set([
   'baseline-shift',
   'text-rendering',
   'shape-inside',
-]);
+].map((name) => name.toLowerCase()));
 
 const TAG_PATTERN = /<\s*(\/?)\s*([a-zA-Z][\w:-]*)((?:"[^"]*"|'[^']*'|[^'">])*?)\s*(\/?)\s*>/g;
 const ATTRIBUTE_PATTERN = /([a-zA-Z_:][\w.:-]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
