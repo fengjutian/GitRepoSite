@@ -2,6 +2,7 @@ import { detectLicense, identifyLicense } from './content/license';
 import { auditInternalLinks } from './content/links';
 import { extractMarkdownLinks } from './content/markdown';
 import { runAudit } from './audit/audit';
+import { RepoSiteError } from './errors';
 import { GitHubClient, type GitHubClientOptions, type TreeEntry } from './github/client';
 import { parseRepositoryUrl } from './github/url';
 import { isExcludedPath, pathToSlug, slugToTitle } from './github/paths';
@@ -110,8 +111,15 @@ export async function loadRepository(
   const readDocuments = await mapWithConcurrency(pendingPaths, READ_CONCURRENCY, async (path) => {
     const entry = entryByPath.get(path);
     if (!entry) return null;
-    const markdown = await readText(client, reference, commitSha, entry);
-    return markdown ? { path, markdown } : null;
+    try {
+      const markdown = await readText(client, reference, commitSha, entry);
+      return markdown ? { path, markdown } : null;
+    } catch (error) {
+      // A file that the tree lists but the repository does not serve must not
+      // abort the whole task; it is skipped like a missing document.
+      if (isNotFound(error)) return null;
+      throw error;
+    }
   });
   for (const read of readDocuments) {
     if (read) markdownByPath.set(read.path, read.markdown);
@@ -150,8 +158,14 @@ export async function loadRepository(
     const entry = entryByPath.get(candidate.sourcePath);
     if (!entry) return { candidate, outcome: 'missing' as const };
     if (entry.size && entry.size > maxImageBytes) return { candidate, outcome: 'too-large' as const };
-    const bytes = await client.getFileBytes(reference, commitSha, candidate.sourcePath, entry.sha);
-    return { candidate, outcome: 'ok' as const, bytes };
+    try {
+      const bytes = await client.getFileBytes(reference, commitSha, candidate.sourcePath, entry.sha);
+      return { candidate, outcome: 'ok' as const, bytes };
+    } catch (error) {
+      // One unreadable image is a warning, not a reason to drop the whole site.
+      if (isNotFound(error)) return { candidate, outcome: 'unreadable' as const };
+      throw error;
+    }
   });
 
   for (const item of fetchedImages) {
@@ -173,6 +187,16 @@ export async function loadRepository(
         handling: 'skipped',
         auditStatus: 'warning',
         reason: `图片体积超过上限 (${maxImageBytes} 字节)`,
+      });
+      continue;
+    }
+    if (item.outcome === 'unreadable') {
+      assets.push({
+        sourcePath: candidate.sourcePath,
+        type: 'image',
+        handling: 'skipped',
+        auditStatus: 'warning',
+        reason: '图片无法读取（仓库中该路径不可用）',
       });
       continue;
     }
@@ -357,8 +381,12 @@ async function readText(
   return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 }
 
-/** Runs `worker` over `items` with a bounded number of parallel requests. */
-async function mapWithConcurrency<T, R>(
+/** True when GitHub reports that a file simply does not exist. */
+function isNotFound(error: unknown): boolean {
+  return error instanceof RepoSiteError && error.code === 'GITHUB_ERROR' && error.status === 404;
+}
+
+/** Runs `worker` over `items` with a bounded number of parallel requests. */async function mapWithConcurrency<T, R>(
   items: T[],
   limit: number,
   worker: (item: T, index: number) => Promise<R>,

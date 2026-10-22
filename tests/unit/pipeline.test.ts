@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { loadRepository } from '@/lib/pipeline';
+import { RepoSiteError } from '@/lib/errors';
 import type { GitHubClient, TreeEntry } from '@/lib/github/client';
 
 const SHA = 'c'.repeat(40);
@@ -114,5 +115,33 @@ describe('loadRepository', () => {
     expect(content.repositoryPaths).toContain('docs');
     expect(content.repositoryPaths).toContain('docs/img');
     expect(content.repositoryPaths).toContain('docs/guide.md');
+  });
+
+  it('keeps the task alive when a single image cannot be read', async () => {
+    const base = createFakeClient([]);
+    const failing = {
+      ...base,
+      async getFileBytes(
+        ref: { owner: string; repo: string },
+        commitSha: string,
+        path: string,
+        blobSha?: string,
+      ) {
+        if (path === 'docs/img/logo.png') {
+          throw new RepoSiteError('GITHUB_ERROR', '仓库中不存在该文件', { status: 404 });
+        }
+        return base.getFileBytes(ref, commitSha, path, blobSha);
+      },
+    } as unknown as GitHubClient;
+
+    const content = await loadRepository('https://github.com/owner/demo', {
+      targetLanguage: 'zh-CN',
+      client: failing,
+    });
+
+    expect(content.documents).toHaveLength(2);
+    const skipped = content.assets.filter((asset) => asset.handling === 'skipped');
+    expect(skipped).toHaveLength(1);
+    expect(skipped[0]!.auditStatus).toBe('warning');
   });
 });
