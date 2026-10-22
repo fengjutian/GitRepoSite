@@ -16,6 +16,8 @@ export interface MarkdownLink {
   href: string;
   text: string;
   kind: 'internal' | 'external' | 'anchor' | 'mail';
+  /** true when the reference points at an image instead of a page */
+  isImage?: boolean;
 }
 
 export interface MarkdownImage {
@@ -101,7 +103,7 @@ export async function renderMarkdown(
     .use(remarkParse)
     .use(remarkGfm)
     .use(remarkRehype)
-    .use(rehypeSlug)
+    .use(rehypeSlug, { prefix: '' })
     .use(rehypeSanitize, sanitizeSchema as never)
     .use(rehypeShiki, { enabled: options.highlight !== false })
     .use(rehypeStringify, { allowDangerousHtml: true });
@@ -151,7 +153,12 @@ export function extractMarkdownLinks(markdown: string): MarkdownLink[] {
   let match = pattern.exec(markdown);
   while (match) {
     const href = match[3] ?? '';
-    links.push({ href, text: match[2] ?? '', kind: classifyLink(href) });
+    links.push({
+      href,
+      text: match[2] ?? '',
+      kind: classifyLink(href),
+      isImage: match[1] === '!',
+    });
     match = pattern.exec(markdown);
   }
   return links;

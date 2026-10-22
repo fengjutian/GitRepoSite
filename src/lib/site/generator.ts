@@ -91,13 +91,15 @@ export async function generateSite(input: SiteInput): Promise<GeneratedSite> {
       metadata,
     );
     const rendered = await renderMarkdown(markdown, { highlight: true });
+    // The page template already renders the title, so a leading H1 in the source is dropped.
+    const content = stripLeadingTitle(rendered.html, rendered.headings);
 
     const html = renderDocument({
       ...baseOptions,
       canonicalPath: `/docs/${document.slug}.html`,
       title: document.title,
-      html: rendered.html,
-      headings: rendered.headings,
+      html: content.html,
+      headings: content.headings,
       sourcePath: document.sourcePath,
       origin: document.origin,
     });
@@ -167,6 +169,22 @@ export async function generateSite(input: SiteInput): Promise<GeneratedSite> {
 function byteLength(content: string | Uint8Array): number {
   if (typeof content === 'string') return new TextEncoder().encode(content).length;
   return content.byteLength;
+}
+
+/** Removes a leading H1 from the rendered document so the title is not rendered twice. */
+export function stripLeadingTitle(
+  html: string,
+  headings: Array<{ id: string; text: string; depth: number }>,
+): { html: string; headings: Array<{ id: string; text: string; depth: number }> } {
+  const match = /^\s*<h1(\s[^>]*)?>([\s\S]*?)<\/h1>\s*/i.exec(html);
+  if (!match) return { html, headings };
+
+  const idMatch = /id="([^"]*)"/i.exec(match[1] ?? '');
+  const id = idMatch ? idMatch[1]! : '';
+  const remaining = id
+    ? headings.filter((heading) => !(heading.depth === 1 && heading.id === id))
+    : headings.filter((heading) => heading.depth !== 1);
+  return { html: html.slice(match[0].length), headings: remaining };
 }
 
 /** Rewrites image and repository-file references so the generated site is self contained. */

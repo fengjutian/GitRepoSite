@@ -293,7 +293,9 @@ export default function Studio() {
   }, [content, metadata, documents, language, ai.summary, licenseAccepted]);
 
   const blockingIssues = audit?.issues.filter((issue) => issue.severity === 'blocking') ?? [];
-  const warningIssues = audit?.issues.filter((issue) => issue.severity === 'warning') ?? [];
+  // The missing license has its own explicit confirmation below, so it is not repeated here.
+  const warningIssues =
+    audit?.issues.filter((issue) => issue.severity === 'warning' && issue.id !== 'license-missing') ?? [];
   const licenseMissing = metadata?.license?.status === 'missing';
   const canExport =
     !!content &&

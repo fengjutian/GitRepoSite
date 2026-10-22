@@ -33,6 +33,8 @@ export function auditInternalLinks(
   for (const input of inputs) {
     for (const link of input.links) {
       if (link.kind !== 'internal') continue;
+      // Image references are audited by the image audit, not by the page link audit.
+      if (link.isImage) continue;
       const target = stripQueryAndHash(link.href);
       if (!target) continue;
 

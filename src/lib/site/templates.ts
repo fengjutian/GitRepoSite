@@ -169,7 +169,7 @@ ${options.nav
 
   return renderLayout({
     ...options,
-    title: `${options.metadata.name} · ${options.siteTitle}`,
+    title: options.siteTitle,
     body,
   });
 }

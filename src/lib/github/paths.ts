@@ -104,7 +104,8 @@ export function dirnameOf(path: string): string {
 }
 
 export function basenameOf(path: string): string {
-  const normalized = normalizeRepoPath(path);
+  // Tolerates references that are not valid repository paths (e.g. "../img/a.png").
+  const normalized = (path ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
   const index = normalized.lastIndexOf('/');
   return index === -1 ? normalized : normalized.slice(index + 1);
 }
