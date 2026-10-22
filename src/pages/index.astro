@@ -1,0 +1,15 @@
+---
+import AppLayout from '../layouts/AppLayout.astro';
+import Studio from '../components/studio';
+---
+
+<AppLayout>
+  <section class="mx-auto w-full max-w-6xl px-4 pt-8">
+    <h1 class="text-2xl font-semibold tracking-tight">把公开 GitHub 仓库变成文档站点</h1>
+    <p class="mt-2 max-w-3xl text-sm text-muted-foreground">
+      读取仓库的 README、Markdown 文档与元数据，生成结构化主页、文档导航、Markdown 副本与 JSON 索引，并打包为可直接部署的 ZIP。
+    </p>
+  </section>
+
+  <Studio client:load />
+</AppLayout>

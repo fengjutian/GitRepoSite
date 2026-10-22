@@ -188,14 +188,15 @@ export class GitHubClient {
         if (this.token) headers.Authorization = `Bearer ${this.token}`;
 
         const response = await this.fetchImpl(url, { headers, signal: controller.signal });
-        if (response.status === 404) {
+        const status = response.status;
+        if (status === 404) {
           throw new RepoSiteError('GITHUB_ERROR', 'GitHub 未找到该资源（仓库可能不存在或不是公开仓库）。', {
             status: 404,
           });
         }
-        if (response.status === 401 || response.status === 403) {
+        if (status === 401 || status === 403 || status === 429) {
           const remaining = response.headers.get('x-ratelimit-remaining');
-          if (remaining === '0' || response.status === 429) {
+          if (remaining === '0' || status === 429) {
             throw new RepoSiteError('GITHUB_RATE_LIMIT', 'GitHub API 调用频率超限，请稍后重试。');
           }
           throw new RepoSiteError('GITHUB_ERROR', 'GitHub 拒绝了本次请求。', { status: 502 });

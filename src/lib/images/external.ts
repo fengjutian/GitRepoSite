@@ -22,7 +22,13 @@ export interface ExternalFetchResult {
 
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
 const BLOCKED_HOST_SUFFIXES = ['.local', '.internal', '.localhost', '.lan', '.home.arpa', '.corp'];
-const BLOCKED_HOSTNAMES = ['localhost', 'localhost.localdomain', 'ip6-localhost', 'metadata', 'metadata.google.internal'];
+const BLOCKED_HOSTNAMES = new Set([
+  'localhost',
+  'localhost.localdomain',
+  'ip6-localhost',
+  'metadata',
+  'metadata.google.internal',
+]);
 
 export interface HostResolver {
   (hostname: string): Promise<string[]>;

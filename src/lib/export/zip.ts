@@ -58,12 +58,10 @@ export async function packageSite(
 
   const zip = new JSZip();
   for (const file of files) {
-    const entry = zip.file(file.path);
-    if (!entry) continue;
     if (typeof file.content === 'string') {
-      entry.file(file.path, file.content);
+      zip.file(file.path, file.content);
     } else {
-      entry.file(file.path, file.content);
+      zip.file(file.path, file.content as unknown as Uint8Array);
     }
   }
 

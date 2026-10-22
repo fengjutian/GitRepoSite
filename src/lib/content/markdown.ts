@@ -66,12 +66,12 @@ export async function renderMarkdown(
     .use(remarkGfm)
     .use(remarkRehype)
     .use(rehypeSlug)
-    .use(rehypeSanitize, sanitizeSchema)
+    .use(rehypeSanitize, sanitizeSchema as never)
     .use(rehypeShiki, { enabled: options.highlight !== false })
     .use(rehypeStringify, { allowDangerousHtml: true });
 
   const mdast = processor.parse(markdown ?? '');
-  const hast = (await processor.run(mdast)) as HastNode;
+  const hast = (await processor.run(mdast)) as unknown as HastNode;
   const html = String(await processor.stringify(hast));
 
   const headings: Heading[] = [];
@@ -108,6 +108,19 @@ function classifyLink(href: string): MarkdownLink['kind'] {
   return 'internal';
 }
 
+/** Lightweight link extraction used by the link audit (no HTML rendering required). */
+export function extractMarkdownLinks(markdown: string): MarkdownLink[] {
+  const links: MarkdownLink[] = [];
+  const pattern = /(!?)\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+  let match = pattern.exec(markdown);
+  while (match) {
+    const href = match[3] ?? '';
+    links.push({ href, text: match[2] ?? '', kind: classifyLink(href) });
+    match = pattern.exec(markdown);
+  }
+  return links;
+}
+
 function rehypeShiki(options: { enabled: boolean }) {
   return async (tree: HastNode) => {
     if (!options.enabled) return tree;
@@ -125,7 +138,7 @@ function rehypeShiki(options: { enabled: boolean }) {
           lang: detectLanguage(code),
           theme: 'github-dark',
         });
-        parent.children = parent.children.map((child) =>
+        parent.children = (parent.children ?? []).map((child) =>
           child === node ? { type: 'raw', value: highlighted } : child,
         );
       } catch {

@@ -1,10 +1,10 @@
-import { detectLicenseFromTree } from './content/license';
+import { detectLicense, identifyLicense } from './content/license';
 import { auditInternalLinks } from './content/links';
-import { renderMarkdown } from './content/markdown';
+import { extractMarkdownLinks } from './content/markdown';
 import { runAudit } from './audit/audit';
-import { GitHubClient, type GitHubClientOptions } from './github/client';
+import { GitHubClient, type GitHubClientOptions, type TreeEntry } from './github/client';
 import { parseRepositoryUrl } from './github/url';
-import { isExcludedPath, sanitizeSlug } from './github/paths';
+import { isExcludedPath, pathToSlug, slugToTitle } from './github/paths';
 import { collectLocalImageReferences, hashBytes, planLocalImages } from './images/local';
 import type {
   AssetRecord,
@@ -39,8 +39,14 @@ export interface RepositoryContent {
 }
 
 const DOC_DIRECTORIES = ['docs', 'doc', 'documentation', 'guide', 'guides', 'wiki', 'manual'];
-const ROOT_DOC_NAMES = ['changelog.md', 'contributing.md', 'architecture.md', 'usage.md', 'installation.md'];
-const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.avif', '.bmp', '.ico']);
+const ROOT_DOC_NAMES = [
+  'changelog.md',
+  'contributing.md',
+  'architecture.md',
+  'usage.md',
+  'installation.md',
+  'api.md',
+];
 const MIME_BY_EXTENSION: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -65,33 +71,33 @@ export async function loadRepository(
   const maxImageBytes = options.maxImageBytes ?? 8 * 1024 * 1024;
 
   const reference = parseRepositoryUrl(repositoryUrl);
-  const repository = await client.getRepository(reference.owner, reference.repo);
-  const commitSha = await client.resolveCommitSha(reference.owner, reference.repo, reference.ref);
-  const tree = await client.getTree(reference.owner, reference.repo, commitSha);
+  const repository = await client.getRepository(reference);
+  const commitSha = await client.resolveCommitSha(reference);
+  const tree = await client.getTree(reference, commitSha);
 
   const entries = tree.entries.filter((entry) => entry.type === 'blob' && !isExcludedPath(entry.path));
   const entryByPath = new Map(entries.map((entry) => [entry.path, entry]));
 
-  const readmeEntry = entries.find((entry) => /(^|\/)readme\.md$/i.test(entry.path) && !entry.path.includes('/'));
-  const readmeMarkdown = readmeEntry ? await readText(client, reference.owner, reference.repo, readmeEntry) : '';
-
-  const license = detectLicenseFromTree(
-    entries.map((entry) => entry.path),
-    async (path) => {
-      const entry = entryByPath.get(path);
-      if (!entry) return undefined;
-      return readText(client, reference.owner, reference.repo, entry);
-    },
+  const readmeEntry = entries.find(
+    (entry) => /(^|\/)readme\.md$/i.test(entry.path) && !entry.path.includes('/'),
   );
+  const readmeMarkdown = readmeEntry
+    ? await readText(client, reference, readmeEntry)
+    : '';
 
-  const documentPaths = pickDocumentPaths(entries.map((entry) => entry.path), readmeEntry?.path);
+  const license = await resolveLicense(entries, entryByPath, client, reference, repository);
+
+  const documentPaths = pickDocumentPaths(
+    entries.map((entry) => entry.path),
+    readmeEntry?.path,
+  );
   const documents: DocumentPage[] = [];
   const imageReferences = new Map<string, string[]>();
 
   for (const path of documentPaths.slice(0, maxDocuments)) {
     const entry = entryByPath.get(path);
     if (!entry) continue;
-    const markdown = await readText(client, reference.owner, reference.repo, entry);
+    const markdown = await readText(client, reference, entry);
     if (!markdown) continue;
 
     const slug = documentSlug(path, readmeEntry?.path);
@@ -140,7 +146,7 @@ export async function loadRepository(
       continue;
     }
 
-    const bytes = await client.getBlobBytes(reference.owner, reference.repo, entry.sha);
+    const bytes = await client.getBlobBytes(reference, entry.sha);
     const hash = hashBytes(bytes);
     if (usedHashes.has(hash)) {
       assets.push({
@@ -207,10 +213,26 @@ export async function loadRepository(
 }
 
 /** Runs the link, image and source audits on a loaded repository. */
-export async function auditRepository(content: RepositoryContent): Promise<AuditReport> {
-  const linkIssues = auditInternalLinks(content.documents, {
-    knownSourcePaths: new Set(content.documents.map((document) => document.sourcePath ?? '')),
-    knownSlugs: new Set(content.documents.map((document) => document.slug)),
+export async function auditRepository(
+  content: RepositoryContent,
+  overrides?: { documents?: DocumentPage[] },
+): Promise<AuditReport> {
+  const documents = overrides?.documents ?? content.documents;
+  const linkInputs = documents.map((document) => ({
+    slug: document.slug,
+    sourcePath: document.sourcePath,
+    links: extractMarkdownLinks(document.contentMarkdown),
+  }));
+
+  const knownRoutes = new Set<string>(['/', '/docs/', '/404.html']);
+  for (const document of documents) knownRoutes.add(`/docs/${document.slug}.html`);
+
+  const linkIssues = auditInternalLinks(linkInputs, {
+    knownSourcePaths: new Set(
+      documents.map((document) => document.sourcePath).filter((path): path is string => Boolean(path)),
+    ),
+    knownSlugs: new Set(documents.map((document) => document.slug)),
+    knownRoutes,
   });
 
   const imageIssues = [];
@@ -237,7 +259,7 @@ export async function auditRepository(content: RepositoryContent): Promise<Audit
 
   return runAudit({
     metadata: content.metadata,
-    documents: content.documents,
+    documents,
     assets: content.assets,
     license: content.license,
     linkIssues,
@@ -246,13 +268,38 @@ export async function auditRepository(content: RepositoryContent): Promise<Audit
   });
 }
 
+async function resolveLicense(
+  entries: TreeEntry[],
+  entryByPath: Map<string, TreeEntry>,
+  client: GitHubClient,
+  reference: { owner: string; repo: string },
+  repository: { license?: { spdxId: string | null; name: string | null } | null },
+): Promise<LicenseInfo> {
+  const detected = detectLicense(entries.map((entry) => entry.path));
+  if (detected.sourcePath) {
+    const entry = entryByPath.get(detected.sourcePath);
+    const text = entry ? await readText(client, reference, entry) : '';
+    const identifier = identifyLicense(text);
+    return {
+      status: identifier ? 'detected' : 'uncertain',
+      sourcePath: detected.sourcePath,
+      identifier,
+    };
+  }
+
+  const spdx = repository.license?.spdxId;
+  if (spdx && spdx !== 'NOASSERTION') {
+    return { status: 'detected', identifier: spdx };
+  }
+  return { status: 'missing' };
+}
+
 async function readText(
   client: GitHubClient,
-  owner: string,
-  repo: string,
+  reference: { owner: string; repo: string },
   entry: { path: string; sha: string },
 ): Promise<string> {
-  const bytes = await client.getBlobBytes(owner, repo, entry.sha);
+  const bytes = await client.getBlobBytes(reference, entry.sha);
   return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 }
 
@@ -275,14 +322,13 @@ function pickDocumentPaths(paths: string[], readmePath?: string): string[] {
 
 function documentSlug(path: string, readmePath?: string): string {
   if (readmePath && path === readmePath) return 'readme';
-  const withoutExtension = path.replace(/\.md$/i, '');
-  return sanitizeSlug(withoutExtension);
+  return pathToSlug(path.replace(/\.md$/i, ''));
 }
 
 function extractTitle(markdown: string, path: string): string {
   const heading = /^#\s+(.+)$/m.exec(markdown);
   if (heading) return heading[1]!.trim().slice(0, 200);
-  return baseNameOf(path).replace(/[-_]+/g, ' ');
+  return slugToTitle(path.replace(/\.md$/i, ''));
 }
 
 function extractSummary(markdown: string): string {
@@ -317,11 +363,11 @@ function summarizeTree(paths: string[]): string {
       directories.set(directory, (directories.get(directory) ?? 0) + 1);
     }
   }
-  const lines = [...directories.entries()]
+  return [...directories.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
     .slice(0, 200)
-    .map(([directory, count]) => `${directory}/ (${count} files)`);
-  return lines.join('\n');
+    .map(([directory, count]) => `${directory}/ (${count} files)`)
+    .join('\n');
 }
 
 function extensionOf(path: string): string {
@@ -334,7 +380,10 @@ function baseNameOf(path: string): string {
 }
 
 function sanitizeFileName(name: string): string {
-  return name.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'asset';
+  return (
+    name
+      .replace(/[^A-Za-z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60) || 'asset'
+  );
 }
-
-export { IMAGE_EXTENSIONS };
