@@ -47,6 +47,11 @@ const sanitizeSchema = {
     img: [...(defaultSchema.attributes?.img ?? []), 'loading'],
     a: [...(defaultSchema.attributes?.a ?? []), 'rel'],
   },
+  protocols: {
+    ...defaultSchema.protocols,
+    // `blob:` is only used by the in-browser preview for local images.
+    src: [...(defaultSchema.protocols?.src ?? []), 'blob'],
+  },
   tagNames: [...(defaultSchema.tagNames ?? []), 'figure', 'figcaption', 'details', 'summary', 'mark'],
 };
 
@@ -199,13 +204,14 @@ async function loadShiki(): Promise<ShikiHighlighter | null> {
   if (!shikiHighlighterPromise) {
     shikiHighlighterPromise = (async () => {
       try {
-        const [{ createHighlighterCore }, { createJavaScriptRegexEngine }, { bundledThemes }] = await Promise.all([
+        const [{ createHighlighterCore }, { createJavaScriptRegexEngine }, { default: githubDark }] = await Promise.all([
           import('shiki/core'),
           import('shiki/engine/javascript'),
-          import('shiki/themes'),
+          // Only the single theme that is used is bundled.
+          import('shiki/dist/themes/github-dark.mjs'),
         ]);
         return (await createHighlighterCore({
-          themes: [bundledThemes['github-dark']],
+          themes: [githubDark],
           langs: [],
           engine: createJavaScriptRegexEngine(),
         })) as unknown as ShikiHighlighter;

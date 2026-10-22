@@ -79,9 +79,10 @@ export async function loadRepository(
   const entries = tree.entries.filter((entry) => entry.type === 'blob' && !isExcludedPath(entry.path));
   const entryByPath = new Map(entries.map((entry) => [entry.path, entry]));
 
-  const readmeEntry = entries.find(
-    (entry) => /(^|\/)readme\.md$/i.test(entry.path) && !entry.path.includes('/'),
-  );
+  const readmeEntry =
+    entries.find(
+      (entry) => /(^|\/)readme\.md$/i.test(entry.path) && !entry.path.includes('/'),
+    ) ?? entries.find((entry) => /(^|\/)readme\.md$/i.test(entry.path));
   const readmeMarkdown = readmeEntry
     ? await readText(client, reference, readmeEntry)
     : '';
@@ -98,7 +99,8 @@ export async function loadRepository(
   for (const path of documentPaths.slice(0, maxDocuments)) {
     const entry = entryByPath.get(path);
     if (!entry) continue;
-    const markdown = await readText(client, reference, entry);
+    const markdown =
+      readmeEntry && path === readmeEntry.path ? readmeMarkdown : await readText(client, reference, entry);
     if (!markdown) continue;
 
     const slug = documentSlug(path, readmeEntry?.path);
@@ -325,6 +327,8 @@ async function readText(
 
 function pickDocumentPaths(paths: string[], readmePath?: string): string[] {
   const selected: string[] = [];
+  // The README is the most important document of a repository and always comes first.
+  if (readmePath) selected.push(readmePath);
   for (const path of paths) {
     if (!/\.md$/i.test(path)) continue;
     if (readmePath && path === readmePath) continue;

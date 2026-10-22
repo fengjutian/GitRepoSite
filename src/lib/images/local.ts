@@ -103,3 +103,34 @@ export function hashBytes(bytes: Uint8Array): string {
   }
   return hash.toString(16).padStart(8, '0');
 }
+
+const MARKDOWN_IMAGE_PATTERN = /!\[([^\]]*)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g;
+
+/**
+ * Rewrites relative image references of a document to the local copies that were stored
+ * in the generated site. Used by the in-browser preview.
+ */
+export function rewriteLocalImagePaths(
+  markdown: string,
+  documentSourcePath: string | undefined,
+  outputPathBySourcePath: Map<string, string>,
+  prefix = '/',
+): string {
+  if (outputPathBySourcePath.size === 0) return markdown;
+  const baseDir = documentSourcePath ? dirnameOf(documentSourcePath) : '';
+  return markdown.replace(MARKDOWN_IMAGE_PATTERN, (full, alt: string, src: string) => {
+    const trimmed = src.trim();
+    if (!trimmed || /^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith('//') || trimmed.startsWith('#')) {
+      return full;
+    }
+    let sourcePath: string;
+    try {
+      sourcePath = resolveRelativePath(baseDir, trimmed.split('#')[0]!.split('?')[0]!);
+    } catch {
+      return full;
+    }
+    const outputPath = outputPathBySourcePath.get(sourcePath);
+    if (!outputPath) return full;
+    return `![${alt}](${prefix}${outputPath})`;
+  });
+}

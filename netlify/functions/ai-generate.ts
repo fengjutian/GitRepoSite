@@ -7,6 +7,7 @@
  */
 import { resolveApiKey, resolveModel, DEEPSEEK_MODELS, MINIMAX_MODELS } from '../../src/lib/ai/providers';
 import { aiProjectSummarySchema } from '../../src/lib/ai/service';
+import { buildProjectPrompt, buildSystemPrompt, type PromptContext } from '../../src/lib/ai/prompts';
 import { redactSecrets } from '../../src/lib/errors';
 
 type JsonRecord = Record<string, unknown>;
@@ -50,6 +51,43 @@ function json(body: JsonRecord, status = 200): Response {
 
 function fail(code: string, message: string, status: number): Response {
   return json({ ok: false, error: { code, message } }, status);
+}
+
+const FIELD_LIMITS = {
+  repositoryName: 200,
+  description: 2000,
+  readme: 200_000,
+  fileTreeSummary: 50_000,
+  license: 200,
+} as const;
+
+function limitedString(value: unknown, max: number): string {
+  if (typeof value !== 'string') return '';
+  return value.slice(0, max);
+}
+
+/** Validates the structured project payload that the browser sends to the AI proxy. */
+function parseProjectPayload(value: unknown): PromptContext | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as JsonRecord;
+
+  const repositoryName = limitedString(raw.repositoryName, FIELD_LIMITS.repositoryName).trim();
+  if (!repositoryName) return null;
+
+  const titlesRaw = Array.isArray(raw.documentTitles) ? raw.documentTitles : [];
+  const documentTitles = titlesRaw
+    .slice(0, 100)
+    .map((title) => limitedString(title, 300).trim())
+    .filter((title) => title.length > 0);
+
+  return {
+    repositoryName,
+    description: limitedString(raw.description, FIELD_LIMITS.description),
+    readme: limitedString(raw.readme, FIELD_LIMITS.readme),
+    documentTitles,
+    fileTreeSummary: limitedString(raw.fileTreeSummary, FIELD_LIMITS.fileTreeSummary),
+    license: limitedString(raw.license, FIELD_LIMITS.license),
+  };
 }
 
 export default async (request: Request): Promise<Response> => {
@@ -98,11 +136,13 @@ export default async (request: Request): Promise<Response> => {
     return fail('INVALID_MODEL', '模型不在允许列表中。', 400);
   }
 
-  const systemPrompt = typeof body.systemPrompt === 'string' ? body.systemPrompt : '';
-  const userPrompt = typeof body.userPrompt === 'string' ? body.userPrompt : '';
-  if (!systemPrompt || !userPrompt) {
-    return fail('INVALID_REQUEST', '缺少提示词。', 400);
+  // Prompts are always built on the server: the client only sends structured project data.
+  const project = parseProjectPayload(body.project);
+  if (!project) {
+    return fail('INVALID_REQUEST', '缺少或非法的项目信息。', 400);
   }
+  const systemPrompt = buildSystemPrompt(language);
+  const userPrompt = buildProjectPrompt(project, language);
 
   const maxInputBytes = Number(process.env.AI_MAX_INPUT_BYTES ?? 524288);
   if (new TextEncoder().encode(userPrompt).length > maxInputBytes) {

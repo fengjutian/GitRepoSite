@@ -13,10 +13,12 @@ import {
 
 import { Alert, Badge, Button, Card, CardContent, CardHeader, CardTitle, Checkbox, Input, Label, Separator, Textarea } from './ui/primitives';
 import { loadRepository, auditRepository, type RepositoryContent } from '@/lib/pipeline';
-import { buildProjectPrompt, buildSystemPrompt } from '@/lib/ai/prompts';
 import { generateSite } from '@/lib/site/generator';
 import { packageSite } from '@/lib/export/zip';
 import { loadSettings, saveSettings } from '@/lib/settings';
+import { renderMarkdown } from '@/lib/content/markdown';
+import { rewriteLocalImagePaths } from '@/lib/images/local';
+import { base64ToBytes, downloadExternalImages as downloadExternalImagesToSite } from '@/lib/images/external-download';
 import type {
   AIKeyMode,
   AIProviderName,
@@ -65,6 +67,9 @@ export default function Studio() {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportSummary, setExportSummary] = useState<{ fileCount: number; totalBytes: number } | null>(null);
+  const [externalImageNote, setExternalImageNote] = useState<string | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState('');
 
   useEffect(() => {
     const settings = loadSettings();
@@ -84,12 +89,96 @@ export default function Studio() {
     [documents, selectedSlug],
   );
 
+  // In-browser preview: the same renderer that is used to build the static site.
+  useEffect(() => {
+    if (!showPreview || !activeDocument) return;
+    let cancelled = false;
+    const objectUrls: string[] = [];
+    const outputPathBySourcePath = new Map<string, string>();
+
+    for (const asset of content?.assets ?? []) {
+      if (asset.handling !== 'copied' || !asset.outputPath || !asset.sourcePath) continue;
+      const bytes = content?.binaryAssets.get(asset.outputPath);
+      if (!bytes) continue;
+      const objectUrl = URL.createObjectURL(
+        new Blob([bytes.slice().buffer as ArrayBuffer], { type: asset.mimeType ?? 'application/octet-stream' }),
+      );
+      objectUrls.push(objectUrl);
+      outputPathBySourcePath.set(asset.sourcePath, objectUrl);
+    }
+
+    const source = rewriteLocalImagePaths(
+      activeDocument.contentMarkdown,
+      activeDocument.sourcePath,
+      outputPathBySourcePath,
+      '',
+    );
+
+    const timer = setTimeout(() => {
+      renderMarkdown(source, { highlight: true })
+        .then((result) => {
+          if (!cancelled) setPreviewHtml(result.html);
+        })
+        .catch(() => {
+          if (!cancelled) setPreviewHtml('<p>预览渲染失败。</p>');
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      for (const objectUrl of objectUrls) URL.revokeObjectURL(objectUrl);
+    };
+  }, [activeDocument, content, showPreview]);
+
   const handleLoad = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     setExportSummary(null);
     try {
-      const loaded = await loadRepository(repositoryUrl, { targetLanguage: language });
+      let loaded = await loadRepository(repositoryUrl, { targetLanguage: language });
+
+      if (downloadExternalImages) {
+        const result = await downloadExternalImagesToSite(
+          loaded.documents,
+          loaded.imageReferences,
+          async (url) => {
+            try {
+              const response = await fetch('/api/fetch-image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url }),
+              });
+              const payload = await response.json();
+              if (!response.ok || !payload?.ok) {
+                return { ok: false, reason: payload?.error?.message ?? '下载失败' };
+              }
+              return {
+                ok: true,
+                bytes: base64ToBytes(payload.data.base64),
+                contentType: payload.data.contentType,
+              };
+            } catch (error) {
+              return { ok: false, reason: error instanceof Error ? error.message : '下载失败' };
+            }
+          },
+        );
+        loaded = {
+          ...loaded,
+          documents: result.documents,
+          assets: [...loaded.assets, ...result.assets],
+          binaryAssets: new Map([...loaded.binaryAssets, ...result.binaryAssets]),
+        };
+        const copied = result.assets.filter((asset) => asset.handling === 'copied').length;
+        setExternalImageNote(
+          result.failed.length > 0
+            ? `已下载 ${copied} 张外部图片，${result.failed.length} 张未能下载（已保留外链）。`
+            : `已下载 ${copied} 张外部图片。`,
+        );
+      } else {
+        setExternalImageNote(null);
+      }
+
       setContent(loaded);
       setDocuments(loaded.documents);
       setMetadata(loaded.metadata);
@@ -103,7 +192,7 @@ export default function Studio() {
     } finally {
       setLoading(false);
     }
-  }, [repositoryUrl, language]);
+  }, [repositoryUrl, language, downloadExternalImages]);
 
   const handleEdit = useCallback(
     (slug: string, patch: Partial<DocumentPage>) => {
@@ -137,18 +226,14 @@ export default function Studio() {
           language,
           model: undefined,
           userApiKey: keyMode === 'byok' ? userApiKey : undefined,
-          systemPrompt: buildSystemPrompt(language),
-          userPrompt: buildProjectPrompt(
-            {
-              repositoryName: content.metadata.name,
-              description: content.metadata.description,
-              readme: content.readmeMarkdown,
-              documentTitles: content.documents.map((document) => document.title),
-              fileTreeSummary: content.fileTreeSummary,
-              license: content.license.identifier ?? content.license.status,
-            },
-            language,
-          ),
+          project: {
+            repositoryName: content.metadata.name,
+            description: content.metadata.description,
+            readme: content.readmeMarkdown,
+            documentTitles: content.documents.map((document) => document.title),
+            fileTreeSummary: content.fileTreeSummary,
+            license: content.license.identifier ?? content.license.status,
+          },
         }),
       });
 
@@ -167,6 +252,18 @@ export default function Studio() {
     setExporting(true);
     setExportError(null);
     try {
+      // Re-run the audit right before exporting: edited content may introduce new issues.
+      const merged: RepositoryContent = { ...content, documents, metadata };
+      const freshAudit = await auditRepository(merged);
+      setAudit(freshAudit);
+      const blocking = freshAudit.issues.filter((issue) => issue.severity === 'blocking');
+      if (blocking.length > 0) {
+        throw new Error(`存在 ${blocking.length} 个阻断项，已阻止导出：${blocking[0]!.message}`);
+      }
+      if (merged.license.status === 'missing' && !licenseAccepted) {
+        throw new Error('尚未确认许可证风险，已阻止导出。');
+      }
+
       const site = await generateSite({
         metadata,
         documents,
@@ -193,7 +290,7 @@ export default function Studio() {
     } finally {
       setExporting(false);
     }
-  }, [content, metadata, documents, language, ai.summary]);
+  }, [content, metadata, documents, language, ai.summary, licenseAccepted]);
 
   const blockingIssues = audit?.issues.filter((issue) => issue.severity === 'blocking') ?? [];
   const warningIssues = audit?.issues.filter((issue) => issue.severity === 'warning') ?? [];
@@ -380,23 +477,33 @@ export default function Studio() {
               <div className="flex flex-col gap-3">
                 {activeDocument ? (
                   <>
-                    <div className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
                       <Label>标题</Label>
-                      <Input
-                        value={activeDocument.title}
-                        onChange={(event) => handleEdit(activeDocument.slug, { title: event.target.value })}
-                      />
+                      <Button variant="outline" size="sm" onClick={() => setShowPreview((value) => !value)}>
+                        {showPreview ? '继续编辑' : '预览渲染效果'}
+                      </Button>
                     </div>
-                    <div className="flex flex-col gap-2">
-                      <Label>Markdown 内容</Label>
-                      <Textarea
-                        className="min-h-[320px] font-mono text-xs"
-                        value={activeDocument.contentMarkdown}
-                        onChange={(event) =>
-                          handleEdit(activeDocument.slug, { contentMarkdown: event.target.value })
-                        }
+                    {showPreview ? (
+                      <div
+                        className="markdown-preview min-h-[320px] rounded-md border border-border p-4"
+                        // The HTML comes from the sanitized Markdown renderer, never from raw input.
+                        dangerouslySetInnerHTML={{ __html: previewHtml }}
                       />
-                    </div>
+                    ) : (
+                      <>
+                        <Input
+                          value={activeDocument.title}
+                          onChange={(event) => handleEdit(activeDocument.slug, { title: event.target.value })}
+                        />
+                        <Textarea
+                          className="min-h-[320px] font-mono text-xs"
+                          value={activeDocument.contentMarkdown}
+                          onChange={(event) =>
+                            handleEdit(activeDocument.slug, { contentMarkdown: event.target.value })
+                          }
+                        />
+                      </>
+                    )}
                     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       <Badge variant="secondary">{activeDocument.sourcePath ?? 'AI 生成'}</Badge>
                       <Badge variant="secondary">{activeDocument.verification}</Badge>
@@ -497,6 +604,7 @@ export default function Studio() {
                 生成过程使用固定模板，输出可独立部署的静态站点（HTML / Markdown / JSON 索引 / llms.txt / sitemap.xml）。
               </p>
               {exportError && <Alert tone="danger">{exportError}</Alert>}
+              {externalImageNote && <Alert tone="info">{externalImageNote}</Alert>}
               {exportSummary && (
                 <Alert tone="success">
                   已生成 {exportSummary.fileCount} 个文件，共 {(exportSummary.totalBytes / 1024).toFixed(1)} KB。

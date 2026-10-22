@@ -73,3 +73,67 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
 }
+
+/* Styling for the in-browser preview of rendered Markdown. */
+@layer components {
+  .markdown-preview {
+    @apply text-sm leading-relaxed;
+  }
+
+  .markdown-preview h1 {
+    @apply mt-4 mb-2 text-xl font-semibold;
+  }
+
+  .markdown-preview h2 {
+    @apply mt-4 mb-2 text-lg font-semibold;
+  }
+
+  .markdown-preview h3 {
+    @apply mt-3 mb-1 text-base font-semibold;
+  }
+
+  .markdown-preview p {
+    @apply my-2;
+  }
+
+  .markdown-preview ul {
+    @apply my-2 list-disc pl-5;
+  }
+
+  .markdown-preview ol {
+    @apply my-2 list-decimal pl-5;
+  }
+
+  .markdown-preview a {
+    @apply text-primary underline underline-offset-2;
+  }
+
+  .markdown-preview code {
+    @apply rounded bg-muted px-1 py-0.5 text-xs;
+  }
+
+  .markdown-preview pre {
+    @apply my-3 overflow-x-auto rounded-md border border-border p-3 text-xs;
+  }
+
+  .markdown-preview pre code {
+    @apply bg-transparent p-0;
+  }
+
+  .markdown-preview img {
+    @apply my-3 max-w-full rounded-md border border-border;
+  }
+
+  .markdown-preview table {
+    @apply my-3 w-full border-collapse text-xs;
+  }
+
+  .markdown-preview th,
+  .markdown-preview td {
+    @apply border border-border px-2 py-1;
+  }
+
+  .markdown-preview blockquote {
+    @apply my-3 border-l-2 border-border pl-3 text-muted-foreground;
+  }
+}
